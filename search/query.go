@@ -314,24 +314,43 @@ func DoSearchProfiles(ctx context.Context, dir identity.Directory, escli *es.Cli
 		}
 	}
 
+	boolQuery := map[string]any{
+		"must": primary,
+		"should": []any{
+			map[string]any{"term": map[string]any{"has_avatar": true}},
+			map[string]any{"term": map[string]any{"has_banner": true}},
+		},
+		"minimum_should_match": 0,
+		"boost":                0.5,
+	}
+
+	if len(filters) > 0 {
+		boolQuery["filter"] = filters
+	}
+
+	// Wrap in function_score to boost by follower count
 	query := map[string]any{
 		"query": map[string]any{
-			"bool": map[string]any{
-				"must": primary,
-				"should": []any{
-					map[string]any{"term": map[string]any{"has_avatar": true}},
-					map[string]any{"term": map[string]any{"has_banner": true}},
+			"function_score": map[string]any{
+				"query": map[string]any{
+					"bool": boolQuery,
 				},
-				"minimum_should_match": 0,
-				"boost":                0.5,
+				"functions": []map[string]any{
+					{
+						"field_value_factor": map[string]any{
+							"field":    "followersFuzzy",
+							"factor":   1,
+							"modifier": "log1p",
+							"missing":  1,
+						},
+					},
+				},
+				"boost_mode": "multiply",
+				"score_mode": "multiply",
 			},
 		},
 		"size": params.Size,
 		"from": params.Offset,
-	}
-
-	if len(filters) > 0 {
-		query["query"].(map[string]any)["bool"].(map[string]any)["filter"] = filters
 	}
 
 	return doSearch(ctx, escli, index, query)
@@ -347,29 +366,48 @@ func DoSearchProfilesTypeahead(ctx context.Context, escli *es.Client, index stri
 
 	filters := params.Filters()
 
+	boolQuery := map[string]any{
+		"must": map[string]any{
+			"multi_match": map[string]any{
+				"query":    params.Query,
+				"type":     "bool_prefix",
+				"operator": "and",
+				"fields": []string{
+					"typeahead",
+					"typeahead._2gram",
+					"typeahead._3gram",
+				},
+			},
+		},
+	}
+
+	if len(filters) > 0 {
+		boolQuery["filter"] = filters
+	}
+
+	// Wrap in function_score to boost by follower count
 	query := map[string]any{
 		"query": map[string]any{
-			"bool": map[string]any{
-				"must": map[string]any{
-					"multi_match": map[string]any{
-						"query":    params.Query,
-						"type":     "bool_prefix",
-						"operator": "and",
-						"fields": []string{
-							"typeahead",
-							"typeahead._2gram",
-							"typeahead._3gram",
+			"function_score": map[string]any{
+				"query": map[string]any{
+					"bool": boolQuery,
+				},
+				"functions": []map[string]any{
+					{
+						"field_value_factor": map[string]any{
+							"field":    "followersFuzzy",
+							"factor":   1,
+							"modifier": "log1p",
+							"missing":  1,
 						},
 					},
 				},
+				"boost_mode": "multiply",
+				"score_mode": "multiply",
 			},
 		},
 		"size": params.Size,
 		"from": params.Offset,
-	}
-
-	if len(filters) > 0 {
-		query["query"].(map[string]any)["bool"].(map[string]any)["filter"] = filters
 	}
 
 	return doSearch(ctx, escli, index, query)
