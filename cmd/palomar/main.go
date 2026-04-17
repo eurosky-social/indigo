@@ -130,6 +130,11 @@ var runCmd = &cli.Command{
 			Value:   "sqlite://data/palomar/search.db",
 			Sources: cli.EnvVars("DATABASE_URL"),
 		},
+		&cli.StringFlag{
+			Name:    "appview-database-url",
+			Usage:   "PostgreSQL URL for appview DB (follows lookup for search personalization)",
+			Sources: cli.EnvVars("APPVIEW_DATABASE_URL"),
+		},
 		&cli.BoolFlag{
 			Name:    "readonly",
 			Sources: cli.EnvVars("PALOMAR_READONLY", "READONLY"),
@@ -265,7 +270,7 @@ var runCmd = &cli.Command{
 			Logger:       logger,
 			ProfileIndex: cmd.String("es-profile-index"),
 			PostIndex:    cmd.String("es-post-index"),
-			DatabaseURL:  cmd.String("database-url"),
+			DatabaseURL:  cmd.String("appview-database-url"),
 		}
 
 		srv, err := search.NewServer(escli, dir, apiConfig)
