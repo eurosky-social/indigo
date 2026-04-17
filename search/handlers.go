@@ -381,7 +381,7 @@ func (s *Server) SearchProfiles(ctx context.Context, params *ActorSearchParams) 
 			return nil, personalizedErr
 		}
 
-		followingBoost := 0.1
+		followingBoost := 10.0 // multiplicative, not additive
 
 		// Insert the personalized results into the global results, deduping as we go and maintaining score-order
 		followingSeen := map[string]struct{}{}
@@ -422,7 +422,7 @@ func (s *Server) SearchProfiles(ctx context.Context, params *ActorSearchParams) 
 
 			// Boost the score of the personalized results
 			if _, ok := followingSeen[did.String()]; ok {
-				r.Score += followingBoost
+				r.Score *= followingBoost
 			}
 
 			// Dedupe the results
