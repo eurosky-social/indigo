@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/earthboundkid/versioninfo/v2"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	_ "github.com/lib/pq"
 	es "github.com/opensearch-project/opensearch-go/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	slogecho "github.com/samber/slog-echo"
@@ -32,6 +34,7 @@ type ServerConfig struct {
 	ProfileIndex      string
 	PostIndex         string
 	AtlantisAddresses []string
+	DatabaseURL       string
 }
 
 type Server struct {
@@ -41,6 +44,7 @@ type Server struct {
 	dir          identity.Directory
 	echo         *echo.Echo
 	logger       *slog.Logger
+	db           *sql.DB // appview PostgreSQL for viewer follows lookup
 
 	Indexer *Indexer
 }
@@ -53,12 +57,32 @@ func NewServer(escli *es.Client, dir identity.Directory, config ServerConfig) (*
 		}))
 	}
 
+	var db *sql.DB
+	if config.DatabaseURL != "" {
+		var err error
+		db, err = sql.Open("postgres", config.DatabaseURL)
+		if err != nil {
+			logger.Warn("failed to open appview database for follows lookup, search personalization disabled", "err", err)
+		} else {
+			db.SetMaxOpenConns(5)
+			db.SetMaxIdleConns(2)
+			if err := db.PingContext(context.Background()); err != nil {
+				logger.Warn("failed to ping appview database, search personalization disabled", "err", err)
+				db.Close()
+				db = nil
+			} else {
+				logger.Info("appview database connected for search personalization")
+			}
+		}
+	}
+
 	serv := Server{
 		escli:        escli,
 		postIndex:    config.PostIndex,
 		profileIndex: config.ProfileIndex,
 		dir:          dir,
 		logger:       logger,
+		db:           db,
 	}
 
 	return &serv, nil

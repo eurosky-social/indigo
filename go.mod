@@ -35,6 +35,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.16.1
 	github.com/lestrrat-go/jwx/v2 v2.1.7
+	github.com/lib/pq v1.10.9
 	github.com/minio/sha256-simd v1.0.1
 	github.com/mr-tron/base58 v1.3.0
 	github.com/multiformats/go-multihash v0.2.3

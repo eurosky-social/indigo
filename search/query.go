@@ -352,6 +352,18 @@ func DoSearchProfiles(ctx context.Context, dir identity.Directory, escli *es.Cli
 							"missing":  1,
 						},
 					},
+					{
+						"filter": map[string]interface{}{
+							"term": map[string]interface{}{"verified": true},
+						},
+						"weight": 3.0,
+					},
+					{
+						"filter": map[string]interface{}{
+							"term": map[string]interface{}{"has_custom_domain": true},
+						},
+						"weight": 1.5,
+					},
 				},
 				"boost_mode": "multiply",
 				"score_mode": "multiply",
@@ -416,6 +428,18 @@ func DoSearchProfilesTypeahead(ctx context.Context, escli *es.Client, index stri
 							"modifier": "log1p",
 							"missing":  1,
 						},
+					},
+					{
+						"filter": map[string]interface{}{
+							"term": map[string]interface{}{"verified": true},
+						},
+						"weight": 3.0,
+					},
+					{
+						"filter": map[string]interface{}{
+							"term": map[string]interface{}{"has_custom_domain": true},
+						},
+						"weight": 1.5,
 					},
 				},
 				"boost_mode": "multiply",

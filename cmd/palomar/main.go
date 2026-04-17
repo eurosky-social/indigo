@@ -265,6 +265,7 @@ var runCmd = &cli.Command{
 			Logger:       logger,
 			ProfileIndex: cmd.String("es-profile-index"),
 			PostIndex:    cmd.String("es-post-index"),
+			DatabaseURL:  cmd.String("database-url"),
 		}
 
 		srv, err := search.NewServer(escli, dir, apiConfig)

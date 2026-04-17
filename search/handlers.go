@@ -258,6 +258,16 @@ func (s *Server) handleSearchActorsSkeleton(e echo.Context) error {
 			})
 		}
 		params.Viewer = &d
+
+		// Look up viewer's follows for personalized search boosting
+		if s.db != nil {
+			follows, err := s.getFollows(ctx, d.String())
+			if err != nil {
+				s.logger.Warn("failed to get follows for viewer", "viewer", d.String(), "err", err)
+			} else {
+				params.Follows = follows
+			}
+		}
 	}
 
 	span.SetAttributes(
@@ -470,4 +480,28 @@ func (s *Server) SearchProfiles(ctx context.Context, params *ActorSearchParams) 
 		out.HitsTotal = &i
 	}
 	return &out, nil
+}
+
+// getFollows returns the list of DIDs the viewer follows, for search personalization.
+// Uses the appview PostgreSQL database (Index Only Scan, sub-millisecond).
+func (s *Server) getFollows(ctx context.Context, viewerDID string) ([]syntax.DID, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT "subjectDid" FROM bsky.follow WHERE creator = $1 LIMIT 2000`,
+		viewerDID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var follows []syntax.DID
+	for rows.Next() {
+		var did string
+		if err := rows.Scan(&did); err != nil {
+			continue
+		}
+		if d, err := syntax.ParseDID(did); err == nil {
+			follows = append(follows, d)
+		}
+	}
+	return follows, rows.Err()
 }
