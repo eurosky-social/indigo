@@ -266,11 +266,13 @@ var runCmd = &cli.Command{
 		}
 		dir := identity.NewCacheDirectory(&base, 1_500_000, time.Hour*24, time.Minute*2, time.Minute*5)
 
+		appviewDBURL := cmd.String("appview-database-url")
+		logger.Info("search server config", "appview_db_url_set", appviewDBURL != "", "appview_db_url_len", len(appviewDBURL))
 		apiConfig := search.ServerConfig{
 			Logger:       logger,
 			ProfileIndex: cmd.String("es-profile-index"),
 			PostIndex:    cmd.String("es-post-index"),
-			DatabaseURL:  cmd.String("appview-database-url"),
+			DatabaseURL:  appviewDBURL,
 		}
 
 		srv, err := search.NewServer(escli, dir, apiConfig)
