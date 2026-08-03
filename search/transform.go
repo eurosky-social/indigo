@@ -14,19 +14,31 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// ProfileDoc is the set of profile fields Palomar owns and derives from the
+// app.bsky.actor.profile record. It is deliberately NOT the whole document:
+// palomar_profile also carries externally-managed ranking signals
+// (followersFuzzy, pagerank, verified, has_custom_domain) populated by a separate
+// process, which must survive a profile reindex. indexProfiles therefore writes
+// this struct as a partial update, leaving those fields untouched.
+//
+// None of these fields use `omitempty`. In a partial update an omitted key means
+// "leave the existing value alone", which would make profile edits that CLEAR a
+// field (removing a description, deleting a tag) silently fail to propagate.
+// Marshalling an explicit null instead makes every write an unambiguous
+// statement about each field Palomar owns.
 type ProfileDoc struct {
 	DocIndexTs  string   `json:"doc_index_ts"`
 	DID         string   `json:"did"`
 	RecordCID   string   `json:"record_cid"`
 	Handle      string   `json:"handle"`
-	DisplayName *string  `json:"display_name,omitempty"`
-	Description *string  `json:"description,omitempty"`
-	ImgAltText  []string `json:"img_alt_text,omitempty"`
-	SelfLabel   []string `json:"self_label,omitempty"`
-	URL         []string `json:"url,omitempty"`
-	Domain      []string `json:"domain,omitempty"`
-	Tag         []string `json:"tag,omitempty"`
-	Emoji       []string `json:"emoji,omitempty"`
+	DisplayName *string  `json:"display_name"`
+	Description *string  `json:"description"`
+	ImgAltText  []string `json:"img_alt_text"`
+	SelfLabel   []string `json:"self_label"`
+	URL         []string `json:"url"`
+	Domain      []string `json:"domain"`
+	Tag         []string `json:"tag"`
+	Emoji       []string `json:"emoji"`
 	HasAvatar   bool     `json:"has_avatar"`
 	HasBanner   bool     `json:"has_banner"`
 }

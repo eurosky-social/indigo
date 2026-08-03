@@ -435,6 +435,40 @@ func (idx *Indexer) indexPosts(ctx context.Context, jobs []*PostIndexJob) error 
 	return nil
 }
 
+// profileBulkUpdate renders the two NDJSON lines for one profile in a _bulk
+// request: an `update` action and a partial document.
+//
+// It is deliberately an `update` and not an `index`. `index` replaces the whole
+// document, which erased the externally-managed ranking signals on
+// palomar_profile (followersFuzzy, pagerank, verified, has_custom_domain) every
+// time a profile was reindexed from the firehose. Because those fields never
+// appear in ProfileDoc, an `update` with a partial doc leaves them untouched --
+// which is the same mechanism indexPageranks already relies on.
+//
+// doc_as_upsert makes the first write for a DID create the document, so profiles
+// that do not exist yet still index normally.
+func profileBulkUpdate(did string, doc ProfileDoc) ([]byte, error) {
+	payload, err := json.Marshal(struct {
+		Doc         ProfileDoc `json:"doc"`
+		DocAsUpsert bool       `json:"doc_as_upsert"`
+	}{Doc: doc, DocAsUpsert: true})
+	if err != nil {
+		return nil, err
+	}
+
+	action, err := json.Marshal(map[string]any{"update": map[string]string{"_id": did}})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 0, len(action)+len(payload)+2)
+	out = append(out, action...)
+	out = append(out, '\n')
+	out = append(out, payload...)
+	out = append(out, '\n')
+	return out, nil
+}
+
 func (idx *Indexer) indexProfiles(ctx context.Context, jobs []*ProfileIndexJob) error {
 	ctx, span := tracer.Start(ctx, "indexProfiles")
 	defer span.End()
@@ -448,18 +482,14 @@ func (idx *Indexer) indexProfiles(ctx context.Context, jobs []*ProfileIndexJob) 
 		job := jobs[i]
 
 		doc := TransformProfile(job.record, job.ident, job.rcid.String())
-		docBytes, err := json.Marshal(doc)
+		lines, err := profileBulkUpdate(job.ident.DID.String(), doc)
 		if err != nil {
 			log.Warn("failed to marshal profile", "err", err)
 			return err
 		}
 
-		indexScript := []byte(fmt.Sprintf(`{"index":{"_id":"%s"}}%s`, job.ident.DID.String(), "\n"))
-		docBytes = append(docBytes, "\n"...)
-
-		buf.Grow(len(indexScript) + len(docBytes))
-		buf.Write(indexScript)
-		buf.Write(docBytes)
+		buf.Grow(len(lines))
+		buf.Write(lines)
 	}
 
 	log.Info("indexing profiles", "num_profiles", len(jobs))
