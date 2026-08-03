@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -102,6 +103,31 @@ func TransformProfile(profile *appbsky.ActorProfile, ident *identity.Identity, c
 	}
 }
 
+// SafeTransformPost wraps TransformPost so that a single malformed record cannot
+// terminate the process.
+//
+// TransformPost walks deeply nested optional fields of a record that arrives from
+// the firehose, i.e. from an untrusted remote PDS. Records are not strictly
+// validated on the way in, and CBOR decoding can leave an outer struct non-nil
+// with an inner pointer nil. A panic here runs on the indexer goroutine, and an
+// unrecovered Go panic takes down the whole process -- discarding a batch of up
+// to 1000 otherwise-valid posts with it, and then repeating on restart once the
+// firehose replays the same record.
+//
+// The nil guards in TransformPost address every dereference known to have
+// panicked; this wrapper is defence in depth for fields added later.
+func SafeTransformPost(post *appbsky.FeedPost, did syntax.DID, rkey, cid string) (doc PostDoc, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic transforming post: %v", r)
+		}
+	}()
+	if post == nil {
+		return PostDoc{}, fmt.Errorf("nil post record")
+	}
+	return TransformPost(post, did, rkey, cid), nil
+}
+
 func TransformPost(post *appbsky.FeedPost, did syntax.DID, rkey, cid string) PostDoc {
 	altText := []string{}
 	if post.Embed != nil && post.Embed.EmbedImages != nil {
@@ -132,17 +158,19 @@ func TransformPost(post *appbsky.FeedPost, did syntax.DID, rkey, cid string) Pos
 		}
 	}
 	var replyRootATURI *string
-	if post.Reply != nil {
+	if post.Reply != nil && post.Reply.Root != nil {
 		replyRootATURI = &(post.Reply.Root.Uri)
 	}
-	if post.Embed != nil && post.Embed.EmbedExternal != nil {
+	if post.Embed != nil && post.Embed.EmbedExternal != nil && post.Embed.EmbedExternal.External != nil {
 		urls = append(urls, post.Embed.EmbedExternal.External.Uri)
 	}
 	var embedATURI *string
-	if post.Embed != nil && post.Embed.EmbedRecord != nil {
+	if post.Embed != nil && post.Embed.EmbedRecord != nil && post.Embed.EmbedRecord.Record != nil {
 		embedATURI = &post.Embed.EmbedRecord.Record.Uri
 	}
-	if post.Embed != nil && post.Embed.EmbedRecordWithMedia != nil {
+	if post.Embed != nil && post.Embed.EmbedRecordWithMedia != nil &&
+		post.Embed.EmbedRecordWithMedia.Record != nil &&
+		post.Embed.EmbedRecordWithMedia.Record.Record != nil {
 		embedATURI = &post.Embed.EmbedRecordWithMedia.Record.Record.Uri
 	}
 	var embedImgCount int

@@ -390,7 +390,13 @@ func (idx *Indexer) indexPosts(ctx context.Context, jobs []*PostIndexJob) error 
 	var buf bytes.Buffer
 	for i := range jobs {
 		job := jobs[i]
-		doc := TransformPost(job.record, job.did, job.rkey, job.rcid.String())
+		doc, err := SafeTransformPost(job.record, job.did, job.rkey, job.rcid.String())
+		if err != nil {
+			// Skip this record rather than aborting the batch: one malformed post
+			// must not cost the other posts in the batch, nor the process.
+			log.Warn("skipping malformed post", "did", job.did, "rkey", job.rkey, "err", err)
+			continue
+		}
 		docBytes, err := json.Marshal(doc)
 		if err != nil {
 			log.Warn("failed to marshal post", "err", err)
