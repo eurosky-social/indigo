@@ -2,7 +2,7 @@ name: container-relay-ghcr
 on: 
   push:
     branches:
-      - main
+      - eurosky
 env:
   REGISTRY: ghcr.io
   USERNAME: ${{ github.actor }}
