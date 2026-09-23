@@ -1,0 +1,161 @@
+name: Sync from upstream
+
+# Keeps the fork in sync with bluesky-social/indigo using a merge model:
+#
+#   - `main` is an exact mirror of upstream/main. Nobody commits to it; this
+#     workflow fast-forwards it.
+#   - `eurosky` is our default branch: upstream plus our changes. Upstream is
+#     brought in by merging it into a `sync/upstream-<date>` branch cut from
+#     `eurosky`, and opening a PR into `eurosky` so CI
+#     (.github/workflows/golang.yml) validates it.
+#
+# Sync PRs MUST be merged with "Create a merge commit". Squashing or rebasing
+# drops the upstream ancestry, and the next sync would conflict on everything.
+#
+# If the merge conflicts, the job fails and lists the files; resolve it locally
+# (see EUROSKY.md). No PR is opened while another sync PR is still open.
+#
+# Requirements:
+#   - A GitHub App installed on this repo with these repository permissions:
+#       * Contents:      Read and write   (fast-forward `main`, push the sync
+#                        branch)
+#       * Pull requests: Read and write   (open the PR)
+#       * Workflows:     Read and write   (REQUIRED: upstream changes
+#                        .github/workflows/*, and the default GITHUB_TOKEN is
+#                        categorically forbidden from pushing workflow files)
+#     Store the App ID in the `SYNC_UPSTREAM_APP_ID` repository variable and the
+#     private key in the `SYNC_UPSTREAM_PK` secret.
+#   - If `main` is protected, the App must be allowed to bypass that rule.
+#   - Scheduled runs only fire from the default branch, so `eurosky` must be
+#     the default branch.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'eurosky-social/indigo'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.SYNC_UPSTREAM_APP_ID }}
+          private-key: ${{ secrets.SYNC_UPSTREAM_PK }}
+
+      - name: Checkout eurosky (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: eurosky
+          fetch-depth: 0
+          # App token is required to push `main` and the sync branch, which
+          # contain .github/workflows/* changes that GITHUB_TOKEN may not write.
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/bluesky-social/indigo.git
+          git fetch upstream --no-tags main
+
+      - name: Fast-forward main to upstream/main
+        run: |
+          if ! git merge-base --is-ancestor origin/main upstream/main; then
+            echo "::error::origin/main has commits that are not in upstream/main. main must stay an exact mirror of upstream; move those commits to eurosky and reset main."
+            exit 1
+          fi
+          # Plain (non-force) push: it only succeeds as a fast-forward.
+          git push origin refs/remotes/upstream/main:refs/heads/main
+
+      - name: Check whether a sync is needed
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "eurosky already contains upstream/main; nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          OPEN=$(gh pr list --repo "$GITHUB_REPOSITORY" --base eurosky --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync/upstream-")) | "#\(.number)"] | join(" ")')
+          if [ -n "$OPEN" ]; then
+            echo "A sync PR is already open (${OPEN}); merge or close it first." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git identity
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create sync branch from eurosky
+        if: steps.check.outputs.skip != 'true'
+        id: branch
+        run: |
+          BRANCH="sync/upstream-$(date +'%Y-%m-%d')"
+          # Disambiguate if a branch for today already exists.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            BRANCH="${BRANCH}-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "base=$(git merge-base HEAD upstream/main)" >> "$GITHUB_OUTPUT"
+          echo "count=$(git rev-list --count HEAD..upstream/main)" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+
+      - name: Merge upstream/main
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          SHORT=$(git rev-parse --short upstream/main)
+          if ! git merge --no-ff --no-edit -m "Merge upstream/main (${SHORT}) into eurosky" upstream/main; then
+            echo "::error::Merging upstream/main into eurosky hit conflicts. Resolve locally, see EUROSKY.md."
+            {
+              echo "### Merge conflicts"
+              echo
+              git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Resolve locally, see EUROSKY.md. For \`go.mod\`/\`go.sum\`, take upstream's version and run \`go mod tidy\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.skip != 'true'
+        # The sync branch name is unique per run, so this is always a fresh
+        # branch with no remote history to overwrite.
+        run: git push origin "${{ steps.branch.outputs.name }}"
+
+      - name: Open pull request
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          BASE: ${{ steps.branch.outputs.base }}
+          COUNT: ${{ steps.branch.outputs.count }}
+        run: |
+          HEAD_SHA=$(git rev-parse upstream/main)
+          TITLE="Sync upstream ($(date +'%Y-%m-%d'))"
+          BODY=$(cat <<EOF
+          Automated upstream sync: merges ${COUNT} new upstream commits into \`eurosky\`.
+
+          Upstream changes: https://github.com/bluesky-social/indigo/compare/${BASE}...${HEAD_SHA}
+
+          **Merge with "Create a merge commit". Do not squash or rebase.**
+
+          Before merging, check whether upstream now covers any of our changes;
+          if so, revert ours on this branch (see EUROSKY.md).
+          EOF
+          )
+          gh pr create --repo "$GITHUB_REPOSITORY" --base eurosky --head "$BRANCH" --title "$TITLE" --body "$BODY"

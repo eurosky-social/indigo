@@ -1,8 +1,9 @@
-name: container-relay-ghcr
-on: 
+name: container-mock-csam-ghcr
+on:
   push:
     branches:
       - eurosky
+
 env:
   REGISTRY: ghcr.io
   USERNAME: ${{ github.actor }}
@@ -10,6 +11,7 @@ env:
 
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
+  BRANCH: ${{ github.ref_name != 'main' && github.ref_name || '' }}
 
 jobs:
   build-platforms:
@@ -55,20 +57,20 @@ jobs:
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha,enable=true,priority=100,prefix=relay-,suffix=,format=long
-            type=raw,value=relay-{{date 'YYYY-MM-DDTHH-mm-ssZ' tz='UTC'}}
-            relay-latest
+            type=sha,enable=true,priority=100,prefix=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }},suffix=,format=long
+            type=raw,value=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }}{{date 'YYYY-MM-DDTHH-mm-ssZ' tz='UTC'}}
+            type=raw,value=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }}latest
 
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./cmd/relay/Dockerfile
+          context: ./cmd/hepa/mock-csam
+          file: ./cmd/hepa/mock-csam/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=relay-${{ steps.platform.outputs.cache }}
-          cache-to: type=gha,mode=max,scope=relay-${{ steps.platform.outputs.cache }}
+          cache-from: type=gha,scope=mock-csam-${{ steps.platform.outputs.cache }}
+          cache-to: type=gha,mode=max,scope=mock-csam-${{ steps.platform.outputs.cache }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -123,9 +125,9 @@ jobs:
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=sha,enable=true,priority=100,prefix=relay-,suffix=,format=long
-            type=raw,value=relay-{{date 'YYYY-MM-DDTHH-mm-ssZ' tz='UTC'}}
-            relay-latest
+            type=sha,enable=true,priority=100,prefix=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }},suffix=,format=long
+            type=raw,value=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }}{{date 'YYYY-MM-DDTHH-mm-ssZ' tz='UTC'}}
+            type=raw,value=mock-csam-${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }}latest
 
       - name: Create manifest list and push
         id: merge
@@ -155,7 +157,8 @@ jobs:
       - name: Tag repository with datetime
         run: |
           DATETIME_TAG=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+          BRANCH_PREFIX="${{ env.BRANCH && format('{0}-', env.BRANCH) || '' }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "relay-$DATETIME_TAG" -m "Release relay-$DATETIME_TAG"
-          git push origin "relay-$DATETIME_TAG"
+          git tag -a "mock-csam-${BRANCH_PREFIX}${DATETIME_TAG}" -m "Release mock-csam-${BRANCH_PREFIX}${DATETIME_TAG}"
+          git push origin "mock-csam-${BRANCH_PREFIX}${DATETIME_TAG}"
