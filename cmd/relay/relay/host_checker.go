@@ -43,6 +43,29 @@ func NewHostClient(userAgent string) *HostClient {
 	}
 }
 
+// NewHostClientWithPrivateNetworks is like NewHostClient but without SSRF
+// protection, so admin requestCrawl can reach hosts on private networks.
+func NewHostClientWithPrivateNetworks(userAgent string) *HostClient {
+	if userAgent == "" {
+		userAgent = "indigo-relay (atproto-relay)"
+	}
+	c := http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+	return &HostClient{
+		Client:    &c,
+		UserAgent: userAgent,
+	}
+}
+
 func (hc *HostClient) apiClient(host string) *atclient.APIClient {
 	client := atclient.APIClient{
 		Client: hc.Client,
