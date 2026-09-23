@@ -54,3 +54,4 @@ netsync-out/
 # Relay dash output
 /public/
 /cmd/relay/public
+/cmd/hepa/mock-csam/mockcsam

@@ -152,6 +152,16 @@ func run(args []string) error {
 			Usage:   "secret token for prescreen server",
 			Sources: cli.EnvVars("HEPA_PRESCREEN_TOKEN"),
 		},
+		&cli.StringFlag{
+			Name:    "csam-host",
+			Usage:   "host for CSAM detection service (scheme, host, port)",
+			Sources: cli.EnvVars("HEPA_CSAM_HOST"),
+		},
+		&cli.StringFlag{
+			Name:    "csam-api-token",
+			Usage:   "API token for CSAM detection service",
+			Sources: cli.EnvVars("HEPA_CSAM_API_TOKEN"),
+		},
 		&cli.DurationFlag{
 			Name:    "report-dupe-period",
 			Usage:   "time period within which automod will not re-report an account for the same reasonType",
@@ -305,6 +315,8 @@ var runCmd = &cli.Command{
 				RulesetName:          cmd.String("ruleset"),
 				PreScreenHost:        cmd.String("prescreen-host"),
 				PreScreenToken:       cmd.String("prescreen-token"),
+				CSAMHost:             cmd.String("csam-host"),
+				CSAMAPIToken:         cmd.String("csam-api-token"),
 				ReportDupePeriod:     cmd.Duration("report-dupe-period"),
 				QuotaModReportDay:    cmd.Int("quota-mod-report-day"),
 				QuotaModTakedownDay:  cmd.Int("quota-mod-takedown-day"),
@@ -406,6 +418,8 @@ func configEphemeralServer(cmd *cli.Command) (*Server, error) {
 			RulesetName:     cmd.String("ruleset"),
 			PreScreenHost:   cmd.String("prescreen-host"),
 			PreScreenToken:  cmd.String("prescreen-token"),
+			CSAMHost:        cmd.String("csam-host"),
+			CSAMAPIToken:    cmd.String("csam-api-token"),
 		},
 	)
 }
