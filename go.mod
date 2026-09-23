@@ -10,6 +10,7 @@ require (
 	github.com/bluesky-social/gttp v0.1.0
 	github.com/brianvoe/gofakeit/v6 v6.25.0
 	github.com/cockroachdb/pebble v1.1.2
+	github.com/corona10/goimagehash v1.1.0
 	github.com/earthboundkid/versioninfo/v2 v2.24.1
 	github.com/go-redis/cache/v9 v9.0.0
 	github.com/gocql/gocql v1.7.0
@@ -94,6 +95,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions/v2 v2.0.0 // indirect
+	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/petar/GoLLRB v0.0.0-20210522233825-ae3b015fd3e9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
