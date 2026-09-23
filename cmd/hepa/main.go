@@ -194,6 +194,11 @@ func run(args []string) error {
 			Sources: cli.EnvVars("HEPA_OZONE_EVENT_TIMEOUT"),
 			Value:   30 * time.Second,
 		},
+		&cli.StringSliceFlag{
+			Name:    "collection-filter",
+			Usage:   "collection prefixes to process (e.g. 'app.flashes.', 'app.bsky.feed.post'); empty processes all collections",
+			Sources: cli.EnvVars("HEPA_COLLECTION_FILTER"),
+		},
 	}
 
 	app.Commands = []*cli.Command{
@@ -349,11 +354,12 @@ var runCmd = &cli.Command{
 		relayHost := cmd.String("atp-relay-host")
 		if relayHost != "" {
 			fc := consumer.FirehoseConsumer{
-				Engine:      srv.Engine,
-				Logger:      logger.With("subsystem", "firehose-consumer"),
-				Host:        cmd.String("atp-relay-host"),
-				Parallelism: cmd.Int("firehose-parallelism"),
-				RedisClient: srv.RedisClient,
+				Engine:            srv.Engine,
+				Logger:            logger.With("subsystem", "firehose-consumer"),
+				Host:              cmd.String("atp-relay-host"),
+				Parallelism:       cmd.Int("firehose-parallelism"),
+				RedisClient:       srv.RedisClient,
+				CollectionFilters: cmd.StringSlice("collection-filter"),
 			}
 
 			go func() {
