@@ -86,39 +86,71 @@ func (r *Relay) UpdateHostAccountLimit(ctx context.Context, hostID uint64, accou
 		return err
 	}
 
-	delta := accountLimit - host.AccountLimit
 	r.Logger.Info("updating host account limit", "host", host.Hostname, "accountLimit", accountLimit, "previousAccountLimit", host.AccountLimit)
 
 	if err := r.db.WithContext(ctx).Model(models.Host{}).Where("id = ?", hostID).Update("account_limit", accountLimit).Error; err != nil {
 		return err
 	}
-
-	// manage accounts marked as "host-throttled" when host-level account limits change. Note that this isn't in a transaction: there is a small chance of race-conditions.
-	if delta > 0 {
-		// if limit increased: potentially mark some "host-throttled" accounts as "active" (ordered by UID ascending)
-		// fetch accounts and update individually. this ensures that account cache is cleared for each (as well as any future code around account status changes)
-		var accounts []models.Account
-		if err := r.db.WithContext(ctx).Model(models.Account{}).Where("status = ? AND upstream_status = ? AND host_id = ?", models.AccountStatusHostThrottled, models.AccountStatusActive, host.ID).Order("uid ASC").Limit(int(delta)).Find(&accounts).Error; err != nil {
-			return err
-		}
-		r.Logger.Info("marking host-throttled accounts as active", "count", len(accounts), "delta", delta, "accountLimit", accountLimit, "host", host.Hostname)
-		for _, acc := range accounts {
-			// defensive double-check
-			if acc.Status != models.AccountStatusHostThrottled || acc.HostID != host.ID {
-				continue
-			}
-			if err := r.UpdateAccountLocalStatus(ctx, syntax.DID(acc.DID), models.AccountStatusActive, true); err != nil {
-				return err
-			}
-		}
-	}
-	// TODO: If limit decreased: potentially mark some "active" accounts as "host-throttled" (ordered by UID descending?)
+	host.AccountLimit = accountLimit
 
 	if r.Slurper.CheckIfSubscribed(host.Hostname) {
-		return r.Slurper.UpdateLimiters(host.Hostname, accountLimit, host.Trusted)
+		if err := r.Slurper.UpdateLimiters(host.Hostname, accountLimit, host.Trusted); err != nil {
+			return err
+		}
 	}
 
-	return nil
+	// TODO: If limit decreased: potentially mark some "active" accounts as "host-throttled" (ordered by UID descending?)
+
+	// runs whether or not the limit increased, so that re-applying a limit resumes an earlier run which was interrupted or partially failed. the new limit is already persisted, so this is detached from request cancellation (eg, an admin client disconnecting)
+	_, err = r.UnthrottleHostAccounts(context.WithoutCancel(ctx), host)
+	return err
+}
+
+// Marks "host-throttled" accounts on the host as "active" (ordered by UID ascending), for as many as the host's account limit has room for. Only accounts active upstream are considered; others are re-evaluated when they become active (see UnthrottleAccountIfHostHasRoom).
+//
+// Room is computed from the host's accounts as they are now, not from a change in limit, so running this again after an interrupted or partially failed run picks up where it left off. A failure on one account does not stop the others; the first failure is returned once all have been attempted.
+//
+// Returns the number of accounts marked active. Note that this isn't in a transaction: there is a small chance of race-conditions.
+func (r *Relay) UnthrottleHostAccounts(ctx context.Context, host *models.Host) (int, error) {
+	var unthrottled int64
+	if err := r.db.WithContext(ctx).Model(models.Account{}).Where("host_id = ? AND status != ?", host.ID, models.AccountStatusHostThrottled).Count(&unthrottled).Error; err != nil {
+		return 0, err
+	}
+	room := host.AccountLimit - unthrottled
+	if room <= 0 {
+		return 0, nil
+	}
+
+	// fetch accounts and update individually. this ensures that account cache is cleared for each (as well as any future code around account status changes)
+	var accounts []models.Account
+	if err := r.db.WithContext(ctx).Model(models.Account{}).Where("status = ? AND upstream_status = ? AND host_id = ?", models.AccountStatusHostThrottled, models.AccountStatusActive, host.ID).Order("uid ASC").Limit(int(room)).Find(&accounts).Error; err != nil {
+		return 0, err
+	}
+	if len(accounts) == 0 {
+		return 0, nil
+	}
+	r.Logger.Info("marking host-throttled accounts as active", "count", len(accounts), "room", room, "accountLimit", host.AccountLimit, "host", host.Hostname)
+
+	var firstErr error
+	count := 0
+	for _, acc := range accounts {
+		// defensive double-check
+		if acc.Status != models.AccountStatusHostThrottled || acc.HostID != host.ID {
+			continue
+		}
+		if err := r.UpdateAccountLocalStatus(ctx, syntax.DID(acc.DID), models.AccountStatusActive, true); err != nil {
+			r.Logger.Error("failed to mark host-throttled account as active", "did", acc.DID, "host", host.Hostname, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		count++
+	}
+	if firstErr != nil {
+		return count, fmt.Errorf("marked %d of %d host-throttled accounts as active on %s: %w", count, len(accounts), host.Hostname, firstErr)
+	}
+	return count, nil
 }
 
 // Persists all the host cursors in a single database transaction. Also updates status to "active" for hosts which have a positive cursor.

@@ -98,7 +98,7 @@ func (r *Relay) processCommitEvent(ctx context.Context, evt *comatproto.SyncSubs
 	// verify that the account has active status
 	if err := r.EnsureAccountActive(ctx, acc); err != nil {
 		logger.Info("dropping message for inactive account", "status", acc.Status, "upstreamStatus", acc.UpstreamStatus)
-		eventsWarningsCounter.WithLabelValues(hostname, "inactive-account").Add(1)
+		eventsWarningsCounter.WithLabelValues(hostname, inactiveAccountWarning(acc)).Add(1)
 		return nil
 	}
 
@@ -169,7 +169,7 @@ func (r *Relay) processSyncEvent(ctx context.Context, evt *comatproto.SyncSubscr
 	// verify that the account has active status
 	if err := r.EnsureAccountActive(ctx, acc); err != nil {
 		logger.Info("dropping message for inactive account", "status", acc.Status, "upstreamStatus", acc.UpstreamStatus)
-		eventsWarningsCounter.WithLabelValues(hostname, "inactive-account").Add(1)
+		eventsWarningsCounter.WithLabelValues(hostname, inactiveAccountWarning(acc)).Add(1)
 		return nil
 	}
 
@@ -284,6 +284,13 @@ func (r *Relay) processAccountEvent(ctx context.Context, evt *comatproto.SyncSub
 			return err
 		}
 		acc.UpstreamStatus = newStatus
+
+		// an account skipped by an account limit increase (because it was inactive upstream at the time) may have been left "host-throttled". the #account event below reflects the result, so no separate event is emitted
+		if newStatus == models.AccountStatusActive {
+			if err := r.UnthrottleAccountIfHostHasRoom(ctx, acc, false); err != nil {
+				return err
+			}
+		}
 	}
 
 	// emit the event
@@ -302,4 +309,12 @@ func (r *Relay) processAccountEvent(ctx context.Context, evt *comatproto.SyncSub
 	}
 
 	return nil
+}
+
+// Label for events dropped because the account is not active. Accounts throttled by the relay's own host account limit are counted separately from accounts which are deactivated, deleted, or taken down, so that the former can be monitored on their own.
+func inactiveAccountWarning(acc *models.Account) string {
+	if acc.Status == models.AccountStatusHostThrottled {
+		return "host-throttled"
+	}
+	return "inactive-account"
 }
