@@ -284,6 +284,13 @@ func (r *Relay) processAccountEvent(ctx context.Context, evt *comatproto.SyncSub
 			return err
 		}
 		acc.UpstreamStatus = newStatus
+
+		// an account skipped by an account limit increase (because it was inactive upstream at the time) may have been left "host-throttled". the #account event below reflects the result, so no separate event is emitted
+		if newStatus == models.AccountStatusActive {
+			if err := r.UnthrottleAccountIfHostHasRoom(ctx, acc, false); err != nil {
+				return err
+			}
+		}
 	}
 
 	// emit the event
