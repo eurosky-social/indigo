@@ -47,7 +47,7 @@ type Slurper struct {
 type SlurperConfig struct {
 	UserAgent           string
 	ConcurrencyPerHost  int
-	QueueDepthPerHost   int
+	QueueDepthPerHost   int // max events queued or being processed per host connection; reading from the host pauses when reached
 	PersistCursorPeriod time.Duration
 
 	BaselinePerSecondLimit int64
@@ -68,9 +68,8 @@ type SlurperConfig struct {
 func DefaultSlurperConfig() *SlurperConfig {
 	// NOTE: many of these defaults are overruled by DefaultRelayConfig, or even process CLI arg defaults
 	return &SlurperConfig{
-		UserAgent:          "indigo-relay (atproto-relay)",
-		ConcurrencyPerHost: 40,
-		// NOTE: queue depth doesn't do anything with current parallel scheduler implementation
+		UserAgent:           "indigo-relay (atproto-relay)",
+		ConcurrencyPerHost:  40,
 		QueueDepthPerHost:   1000,
 		PersistCursorPeriod: time.Second * 4,
 
