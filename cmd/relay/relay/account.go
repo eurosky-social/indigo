@@ -200,7 +200,7 @@ func (r *Relay) EnsureAccountHost(ctx context.Context, acc *models.Account, host
 
 // If the account is "host-throttled" but its current host is within its account limit, marks the account active again (updating the struct via pointer).
 //
-// Throttling is decided when an account is first seen (CreateAccountHost), and is otherwise only reversed in bulk when a host's limit is raised (UpdateHostAccountLimit), which only considers accounts that are active upstream at that moment. Without re-evaluating when an account moves to a different host, or when it becomes active upstream again, such accounts would stay throttled indefinitely, and all their events would be dropped.
+// Throttling is decided when an account is first seen (CreateAccountHost), and is otherwise only reversed in bulk when a host's limit is changed (UpdateHostAccountLimit), which only considers accounts that are active upstream at that moment. Without re-evaluating when an account moves to a different host, when it becomes active upstream again, or when it has events dropped (EnsureAccountActive), such accounts would stay throttled indefinitely, and all their events would be dropped.
 //
 // The `emitEvent` flag is passed through to UpdateAccountLocalStatus; callers which are about to emit an `#account` event themselves should pass false.
 func (r *Relay) UnthrottleAccountIfHostHasRoom(ctx context.Context, acc *models.Account, emitEvent bool) error {
@@ -229,6 +229,13 @@ func (r *Relay) UnthrottleAccountIfHostHasRoom(ctx context.Context, acc *models.
 func (r *Relay) EnsureAccountActive(ctx context.Context, acc *models.Account) error {
 
 	// short-circuit in common case
+	if acc.IsActive() {
+		return nil
+	}
+	// the account may be "host-throttled" on a host which now has room for it (eg, other accounts moved away, or a limit increase was interrupted)
+	if err := r.UnthrottleAccountIfHostHasRoom(ctx, acc, true); err != nil {
+		return err
+	}
 	if acc.IsActive() {
 		return nil
 	}

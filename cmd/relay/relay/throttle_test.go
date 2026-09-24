@@ -133,3 +133,88 @@ func TestUnthrottleLeavesOtherStatusesAlone(t *testing.T) {
 
 	assert.Equal(t, models.AccountStatusTakendown, testAccountRow(t, r, acc.UID).Status)
 }
+
+func testAccount(t *testing.T, r *Relay, did string, hostID uint64, status, upstream models.AccountStatus) *models.Account {
+	t.Helper()
+	acc := models.Account{DID: did, HostID: hostID, Status: status, UpstreamStatus: upstream}
+	require.NoError(t, r.db.Create(&acc).Error)
+	return &acc
+}
+
+// Re-applying the same limit resumes an earlier limit increase which was interrupted before promoting every account it had room for.
+func TestUpdateHostAccountLimitResumesInterruptedRun(t *testing.T) {
+	ctx := context.Background()
+	r := testThrottleRelay(t, identity.NewMockDirectory())
+
+	host := testThrottleHost(t, r, "resumed.example.com", 3, 3)
+	testAccount(t, r, "did:plc:resumed1", host.ID, models.AccountStatusActive, models.AccountStatusActive)
+	a2 := testAccount(t, r, "did:plc:resumed2", host.ID, models.AccountStatusHostThrottled, models.AccountStatusActive)
+	a3 := testAccount(t, r, "did:plc:resumed3", host.ID, models.AccountStatusHostThrottled, models.AccountStatusActive)
+
+	require.NoError(t, r.UpdateHostAccountLimit(ctx, host.ID, 3))
+
+	assert.Equal(t, models.AccountStatusActive, testAccountRow(t, r, a2.UID).Status)
+	assert.Equal(t, models.AccountStatusActive, testAccountRow(t, r, a3.UID).Status)
+}
+
+// Only as many accounts as the limit has room for are promoted, lowest UID first, and accounts inactive upstream are left for later.
+func TestUpdateHostAccountLimitPromotesUpToRoom(t *testing.T) {
+	ctx := context.Background()
+	r := testThrottleRelay(t, identity.NewMockDirectory())
+
+	host := testThrottleHost(t, r, "partial.example.com", 5, 1)
+	testAccount(t, r, "did:plc:partial1", host.ID, models.AccountStatusActive, models.AccountStatusActive)
+	inactive := testAccount(t, r, "did:plc:partial2", host.ID, models.AccountStatusHostThrottled, models.AccountStatusDeactivated)
+	first := testAccount(t, r, "did:plc:partial3", host.ID, models.AccountStatusHostThrottled, models.AccountStatusActive)
+	second := testAccount(t, r, "did:plc:partial4", host.ID, models.AccountStatusHostThrottled, models.AccountStatusActive)
+	third := testAccount(t, r, "did:plc:partial5", host.ID, models.AccountStatusHostThrottled, models.AccountStatusActive)
+
+	require.NoError(t, r.UpdateHostAccountLimit(ctx, host.ID, 3))
+
+	assert.Equal(t, models.AccountStatusHostThrottled, testAccountRow(t, r, inactive.UID).Status)
+	assert.Equal(t, models.AccountStatusActive, testAccountRow(t, r, first.UID).Status)
+	assert.Equal(t, models.AccountStatusActive, testAccountRow(t, r, second.UID).Status)
+	assert.Equal(t, models.AccountStatusHostThrottled, testAccountRow(t, r, third.UID).Status)
+	assert.Equal(t, int64(3), testHostRow(t, r, host.ID).AccountLimit)
+}
+
+func testHostRow(t *testing.T, r *Relay, id uint64) models.Host {
+	t.Helper()
+	var h models.Host
+	require.NoError(t, r.db.First(&h, id).Error)
+	return h
+}
+
+// An account left throttled on a host which has since come back under its limit is promoted the next time it has an event checked.
+func TestEnsureAccountActiveUnthrottlesWhenHostHasRoom(t *testing.T) {
+	ctx := context.Background()
+	r := testThrottleRelay(t, identity.NewMockDirectory())
+
+	host := testThrottleHost(t, r, "roomy.example.com", 90, 100)
+	acc := testThrottledAccount(t, r, syntax.DID("did:plc:droppedwithroom"), host.ID, models.AccountStatusActive)
+
+	require.NoError(t, r.EnsureAccountActive(ctx, acc))
+
+	assert.Equal(t, models.AccountStatusActive, acc.Status)
+	assert.Equal(t, models.AccountStatusActive, testAccountRow(t, r, acc.UID).Status)
+}
+
+// On a host still over its limit, the account stays throttled and its events are still dropped.
+func TestEnsureAccountActiveKeepsThrottleOnFullHost(t *testing.T) {
+	ctx := context.Background()
+	r := testThrottleRelay(t, identity.NewMockDirectory())
+
+	host := testThrottleHost(t, r, "full.example.com", 150, 100)
+	acc := testThrottledAccount(t, r, syntax.DID("did:plc:droppedwhenfull"), host.ID, models.AccountStatusActive)
+
+	require.Error(t, r.EnsureAccountActive(ctx, acc))
+
+	assert.Equal(t, models.AccountStatusHostThrottled, acc.Status)
+	assert.Equal(t, models.AccountStatusHostThrottled, testAccountRow(t, r, acc.UID).Status)
+}
+
+func TestInactiveAccountWarning(t *testing.T) {
+	assert.Equal(t, "host-throttled", inactiveAccountWarning(&models.Account{Status: models.AccountStatusHostThrottled, UpstreamStatus: models.AccountStatusActive}))
+	assert.Equal(t, "inactive-account", inactiveAccountWarning(&models.Account{Status: models.AccountStatusTakendown, UpstreamStatus: models.AccountStatusActive}))
+	assert.Equal(t, "inactive-account", inactiveAccountWarning(&models.Account{Status: models.AccountStatusActive, UpstreamStatus: models.AccountStatusDeactivated}))
+}
