@@ -195,9 +195,28 @@ func (dp *DiskPersistence) resumeLog() error {
 		return err
 	}
 
-	seq, err := scanForLastSeq(fi, -1)
+	seq, end, err := scanForLastSeq(fi, -1)
 	if err != nil {
 		return fmt.Errorf("failed to scan log file for last seqno: %w", err)
+	}
+
+	// If the previous process died partway through a write, the file ends with
+	// an incomplete record. Cut it off: otherwise the next write lands after
+	// the record's declared end and leaves a hole that playback can't decode.
+	// That record was never broadcast (flushLog broadcasts after the write), so
+	// its seq gets reused.
+	st, err := fi.Stat()
+	if err != nil {
+		return err
+	}
+	if st.Size() > end {
+		dp.log.Warn("truncating incomplete record at end of log file", "file", lfr.Path, "size", st.Size(), "validEnd", end, "lastSeq", seq)
+		if err := fi.Truncate(end); err != nil {
+			return fmt.Errorf("failed to truncate incomplete record: %w", err)
+		}
+	}
+	if _, err := fi.Seek(end, io.SeekStart); err != nil {
+		return err
 	}
 
 	if seq == -1 {
@@ -276,8 +295,32 @@ func (dp *DiskPersistence) swapLog(ctx context.Context) error {
 	return nil
 }
 
-func scanForLastSeq(fi *os.File, end int64) (int64, error) {
+// scanForLastSeq walks the record headers of a log file from the start. It
+// returns the seq of the last complete record (-1 if there is none) and the
+// offset just past it, and leaves the file positioned at that offset.
+//
+// If end > 0, it stops at the first record with a seq greater than end, and
+// returns that seq and the offset of that record instead.
+//
+// A record that is cut short at the end of the file (partial header, or a body
+// extending past EOF) is not counted: the scan stops at its start. This happens
+// when the process dies partway through a write, or when reading the active
+// log file while a flush is in progress.
+func scanForLastSeq(fi *os.File, end int64) (int64, int64, error) {
 	scratch := make([]byte, headerSize)
+
+	st, err := fi.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	size := st.Size()
+
+	rewind := func(seq, offset int64) (int64, int64, error) {
+		if _, err := fi.Seek(offset, io.SeekStart); err != nil {
+			return 0, 0, err
+		}
+		return seq, offset, nil
+	}
 
 	var lastSeq int64 = -1
 	var offset int64
@@ -285,38 +328,37 @@ func scanForLastSeq(fi *os.File, end int64) (int64, error) {
 		eh, err := readHeader(fi, scratch)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return lastSeq, nil
+				return lastSeq, offset, nil
 			}
-			return 0, err
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return rewind(lastSeq, offset)
+			}
+			return 0, 0, err
 		}
 
 		if end > 0 && eh.Seq > end {
-			// return to beginning of offset
-			n, err := fi.Seek(offset, io.SeekStart)
+			return rewind(eh.Seq, offset)
+		}
+
+		next := offset + headerSize + eh.Len64()
+		if next > size {
+			// the file may have grown since we looked (active log file)
+			st, err := fi.Stat()
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
-
-			if n != offset {
-				return 0, fmt.Errorf("rewind seek failed")
+			size = st.Size()
+			if next > size {
+				return rewind(lastSeq, offset)
 			}
-
-			return eh.Seq, nil
 		}
 
 		lastSeq = eh.Seq
 
-		noff, err := fi.Seek(int64(eh.Len), io.SeekCurrent)
-		if err != nil {
-			return 0, err
+		if _, err := fi.Seek(next, io.SeekStart); err != nil {
+			return 0, 0, err
 		}
-
-		if noff != offset+headerSize+int64(eh.Len) {
-			// TODO: must recover from this
-			return 0, fmt.Errorf("did not seek to next event properly")
-		}
-
-		offset = noff
+		offset = next
 	}
 }
 
@@ -435,6 +477,11 @@ var filesGarbageCollected = promauto.NewCounterVec(prometheus.CounterOpts{
 var currentSeqGuage = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "disk_persister_current_seq",
 	Help: "Current sequence number to be used for next persisted event",
+})
+
+var playbackUndecodableRecords = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "disk_persister_playback_undecodable_records",
+	Help: "Number of records skipped during playback because they failed to decode",
 })
 
 func (dp *DiskPersistence) garbageCollect(ctx context.Context) []error {
@@ -761,8 +808,10 @@ func (dp *DiskPersistence) readEventsFrom(ctx context.Context, since int64, fn s
 		return nil, err
 	}
 
+	defer fi.Close()
+
 	if since != 0 {
-		lastSeq, err := scanForLastSeq(fi, since)
+		lastSeq, _, err := scanForLastSeq(fi, since)
 		if err != nil {
 			return nil, err
 		}
@@ -787,62 +836,97 @@ func (dp *DiskPersistence) readEventsFrom(ctx context.Context, since int64, fn s
 			if errors.Is(err, io.EOF) {
 				return &lastSeq, nil
 			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				dp.log.Warn("log file ends inside a record header", "filename", fn, "lastSeq", lastSeq)
+				return &lastSeq, nil
+			}
 
 			return nil, err
 		}
 
-		lastSeq = h.Seq
-
-		if postDoNotEmit(h.Flags) {
-			// event taken down, skip
-			_, err := io.CopyN(io.Discard, bufr, h.Len64()) // would be really nice if the buffered reader had a 'skip' method that does a seek under the hood
-			if err != nil {
-				return nil, fmt.Errorf("failed while skipping event (seq: %d, fn: %q): %w", h.Seq, fn, err)
-			}
-			continue
-		}
-
-		switch h.Kind {
-		case evtKindCommit:
-			var evt atproto.SyncSubscribeRepos_Commit
-			if err := evt.UnmarshalCBOR(io.LimitReader(bufr, h.Len64())); err != nil {
-				return nil, err
-			}
-			evt.Seq = h.Seq
-			if err := cb(&stream.XRPCStreamEvent{RepoCommit: &evt}); err != nil {
-				return nil, err
-			}
-		case evtKindSync:
-			var evt atproto.SyncSubscribeRepos_Sync
-			if err := evt.UnmarshalCBOR(io.LimitReader(bufr, h.Len64())); err != nil {
-				return nil, err
-			}
-			evt.Seq = h.Seq
-			if err := cb(&stream.XRPCStreamEvent{RepoSync: &evt}); err != nil {
-				return nil, err
-			}
-		case evtKindIdentity:
-			var evt atproto.SyncSubscribeRepos_Identity
-			if err := evt.UnmarshalCBOR(io.LimitReader(bufr, h.Len64())); err != nil {
-				return nil, err
-			}
-			evt.Seq = h.Seq
-			if err := cb(&stream.XRPCStreamEvent{RepoIdentity: &evt}); err != nil {
-				return nil, err
-			}
-		case evtKindAccount:
-			var evt atproto.SyncSubscribeRepos_Account
-			if err := evt.UnmarshalCBOR(io.LimitReader(bufr, h.Len64())); err != nil {
-				return nil, err
-			}
-			evt.Seq = h.Seq
-			if err := cb(&stream.XRPCStreamEvent{RepoAccount: &evt}); err != nil {
-				return nil, err
-			}
-		default:
+		if !postDoNotEmit(h.Flags) && !knownEvtKind(h.Kind) {
+			// the header itself is suspect, so the framing after it can't be trusted either
 			dp.log.Warn("unrecognized event kind coming from log file", "seq", h.Seq, "kind", h.Kind)
 			return nil, fmt.Errorf("halting on unrecognized event kind")
 		}
+
+		body := &io.LimitedReader{R: bufr, N: h.Len64()}
+
+		var evt *stream.XRPCStreamEvent
+		var decodeErr error
+		if !postDoNotEmit(h.Flags) {
+			evt, decodeErr = decodeEvent(h, body)
+		}
+
+		// drain whatever the decoder didn't read, so the next header is read from the right place
+		if _, err := io.Copy(io.Discard, body); err != nil {
+			return nil, fmt.Errorf("failed while skipping event (seq: %d, fn: %q): %w", h.Seq, fn, err)
+		}
+		if body.N > 0 {
+			dp.log.Warn("log file ends inside a record", "filename", fn, "seq", h.Seq, "missingBytes", body.N)
+			return &lastSeq, nil
+		}
+
+		lastSeq = h.Seq
+
+		if decodeErr != nil {
+			// The header framing is intact, so skip just this record rather
+			// than failing playback for every consumer behind it.
+			playbackUndecodableRecords.Inc()
+			dp.log.Error("skipping undecodable record in log file", "filename", fn, "seq", h.Seq, "kind", h.Kind, "len", h.Len, "err", decodeErr)
+			continue
+		}
+		if evt == nil {
+			// event taken down, skip
+			continue
+		}
+
+		if err := cb(evt); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func knownEvtKind(kind uint32) bool {
+	switch kind {
+	case evtKindCommit, evtKindSync, evtKindIdentity, evtKindAccount:
+		return true
+	}
+	return false
+}
+
+func decodeEvent(h *evtHeader, r io.Reader) (*stream.XRPCStreamEvent, error) {
+	switch h.Kind {
+	case evtKindCommit:
+		var evt atproto.SyncSubscribeRepos_Commit
+		if err := evt.UnmarshalCBOR(r); err != nil {
+			return nil, err
+		}
+		evt.Seq = h.Seq
+		return &stream.XRPCStreamEvent{RepoCommit: &evt}, nil
+	case evtKindSync:
+		var evt atproto.SyncSubscribeRepos_Sync
+		if err := evt.UnmarshalCBOR(r); err != nil {
+			return nil, err
+		}
+		evt.Seq = h.Seq
+		return &stream.XRPCStreamEvent{RepoSync: &evt}, nil
+	case evtKindIdentity:
+		var evt atproto.SyncSubscribeRepos_Identity
+		if err := evt.UnmarshalCBOR(r); err != nil {
+			return nil, err
+		}
+		evt.Seq = h.Seq
+		return &stream.XRPCStreamEvent{RepoIdentity: &evt}, nil
+	case evtKindAccount:
+		var evt atproto.SyncSubscribeRepos_Account
+		if err := evt.UnmarshalCBOR(r); err != nil {
+			return nil, err
+		}
+		evt.Seq = h.Seq
+		return &stream.XRPCStreamEvent{RepoAccount: &evt}, nil
+	default:
+		return nil, fmt.Errorf("unrecognized event kind %d", h.Kind)
 	}
 }
 
@@ -989,6 +1073,10 @@ func (dp *DiskPersistence) Shutdown(ctx context.Context) error {
 	close(dp.shutdown)
 	if err := dp.Flush(ctx); err != nil {
 		return err
+	}
+
+	if err := dp.logfi.Sync(); err != nil {
+		dp.log.Warn("failed to sync log file on shutdown", "err", err)
 	}
 
 	return dp.logfi.Close()
