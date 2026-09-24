@@ -321,6 +321,12 @@ func runRelay(ctx context.Context, cmd *cli.Command) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
+	// When stdout/stderr is a pipe to a log collector that goes away first,
+	// Go's default is to die of SIGPIPE on the next log write, skipping the
+	// graceful shutdown below and leaving a partial write in the event log.
+	// With SIGPIPE ignored the write just fails with EPIPE.
+	signal.Ignore(syscall.SIGPIPE)
+
 	dburl := cmd.String("db-url")
 	maxConn := cmd.Int("max-db-conn")
 	logger.Info("configuring database", "url", safeDatabaseURLForLog(dburl), "maxConn", maxConn)
