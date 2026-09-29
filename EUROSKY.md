@@ -93,6 +93,10 @@ git log --first-parent --oneline eurosky                                    # ou
 | hepa: spam image detection by perceptual hash (`HEPA_SPAM_IMAGE_PATH`, `HEPA_SPAM_HASH_THRESHOLD`), reference image shipped in the hepa image             | `f0e4ed76`  | `automod/visual/{spam_hash_client,spam_hash_rule,metrics}.go`, `cmd/hepa/{main,server}.go`, `cmd/hepa/{Dockerfile,spam.jpg}`, `go.mod`, `go.sum`            | Ours only; demo              |
 | Fork CI: upstream sync workflow, multi-arch GHCR image builds from `eurosky` for relay, hepa and mock-csam, golang.yml on `eurosky`                      | `275a927c`  | `sync-upstream.yaml`, `container-{hepa,relay,mock-csam}-ghcr.yaml`, `golang.yml`                                                                           | Ours only                    |
 | Fork CI: relay releases (binary plus admin dashboard tarball) on `relay-v*` tags | see git log | `release-relay.yaml` | Ours only |
+| Palomar (search service): upstream removed it in `bfc833d4` (2026-06-04); restored for our appview. No `container-palomar-*` workflows (eurosky-infra builds it on the host). Re-adds `purell`, `opensearch-go/v2`, `otelecho` to `go.mod` | see git log | `cmd/palomar/*`, `search/*`, `go.mod`, `go.sum`, `Makefile`, `README.md`, `HACKING.md` | Ours only; removed upstream |
+| Palomar: actor search ranking from [blacksky-algorithms/indigo](https://github.com/blacksky-algorithms/indigo) `blacksky/customizations` (`b9a88d45`..`aded6011`): `function_score` on `followersFuzzy`, `pagerank`, `verified`, `has_custom_domain`; viewer follows from the appview DB (`APPVIEW_DATABASE_URL`, adds `lib/pq`) boosted 10x | see git log | `cmd/palomar/main.go`, `search/{handlers,query,server}.go`, `go.mod`, `go.sum` | Blacksky's; cherry-picked |
+| Palomar: no indexer crash-loop on posts with a `reply` lacking `root` or a partial embed (Blacksky `68160b85`) | see git log | `search/{indexing,transform,transform_test}.go` | Blacksky's; cherry-picked |
+| Palomar: profiles written as partial updates so external ranking signals (`followersFuzzy` from `palomar-sync`) survive a reindex (Blacksky `ab525e4a`) | see git log | `search/{indexing,transform,profile_update_test}.go` | Blacksky's; cherry-picked |
 | This file                                                                                                                                               | see git log | `EUROSKY.md`                                                                                                                                               | Ours only                    |
 
 ### Not carried over from the archive
@@ -106,3 +110,13 @@ Changes on `archive/eurosky-2026-09-23` that were left behind when the branch wa
 - **Downgrades** of `versioninfo` and `urfave/cli` (kw-cli) and the `replace github.com/bluesky-social/indigo => ./` in `go.mod`: rebase leftovers.
 - **`api/bsky/unspeccedcheckHandleAvailability.go`**: stray generated file, unused.
 - Whitespace-only edits to `README.md` and `automod/rules/blobs.go`.
+
+## Palomar
+
+Upstream removed Palomar (`cmd/palomar`, `search/`) on 2026-06-04; our appview still runs it, so this fork carries it. Upstream no longer touches those paths, so syncs don't conflict there, but they can break the build when upstream changes an API Palomar uses (`golang.yml` catches that on the sync PR: fix it on the sync branch). The Blacksky commits keep their author and carry `(cherry picked from commit …)`; to pick up more of their work, compare against `blacksky/customizations`:
+
+```bash
+git remote add blacksky https://github.com/blacksky-algorithms/indigo.git
+git fetch blacksky
+git log --oneline --no-merges eurosky..blacksky/blacksky/customizations -- search cmd/palomar
+```
