@@ -89,6 +89,28 @@ func run(args []string) error {
 			Usage:   "max bytes target for event cache, 0 to disable size target trimming",
 			Sources: cli.EnvVars("RAINBOW_PERSIST_BYTES", "SPLITTER_PERSIST_BYTES"),
 		},
+		&cli.BoolFlag{
+			Name:    "persist-no-sync",
+			Usage:   "don't fsync each event to the persistence db. Raises the intake rate a slow disk allows; events lost in a machine crash are fetched again from the upstream host",
+			Sources: cli.EnvVars("RAINBOW_PERSIST_NO_SYNC"),
+		},
+		&cli.Int64Flag{
+			Name:    "playback-rate-limit",
+			Value:   0,
+			Usage:   "max events per second sent to a consumer replaying from a cursor, 0 for no limit. Has to be well above the live event rate, or consumers never catch up",
+			Sources: cli.EnvVars("RAINBOW_PLAYBACK_RATE_LIMIT"),
+		},
+		&cli.Int64Flag{
+			Name:    "playback-global-rate-limit",
+			Value:   0,
+			Usage:   "max events per second sent to all consumers replaying from a cursor together, 0 for no limit",
+			Sources: cli.EnvVars("RAINBOW_PLAYBACK_GLOBAL_RATE_LIMIT"),
+		},
+		&cli.StringSliceFlag{
+			Name:    "playback-exempt",
+			Usage:   "consumer IP addresses or CIDR ranges the playback rate limits don't apply to. Comma-separated or multiple flags",
+			Sources: cli.EnvVars("RAINBOW_PLAYBACK_EXEMPT"),
+		},
 		&cli.StringSliceFlag{
 			// TODO: better name for this argument
 			Name:    "next-crawler",
@@ -171,8 +193,12 @@ func runSplitter(ctx context.Context, cmd *cli.Command) error {
 	collectionDirHost := cmd.String("collectiondir-host")
 	nextCrawlers := cmd.StringSlice("next-crawler")
 
+	playbackExempt, err := splitter.ParsePlaybackExempt(cmd.StringSlice("playback-exempt"))
+	if err != nil {
+		return err
+	}
+
 	var spl *splitter.Splitter
-	var err error
 	if persistPath != "" {
 		logger.Info("building splitter with storage at", "path", persistPath)
 		ppopts := pebblepersist.PebblePersistOptions{
@@ -180,6 +206,9 @@ func runSplitter(ctx context.Context, cmd *cli.Command) error {
 			PersistDuration: time.Duration(float64(time.Hour) * cmd.Float64("persist-hours")),
 			GCPeriod:        5 * time.Minute,
 			MaxBytes:        uint64(cmd.Int64("persist-bytes")),
+			NoSync:          cmd.Bool("persist-no-sync"),
+			// the splitter only forwards the stored bytes
+			RawPlayback: true,
 		}
 		conf := splitter.SplitterConfig{
 			UpstreamHost:      upstreamHost,
@@ -187,6 +216,10 @@ func runSplitter(ctx context.Context, cmd *cli.Command) error {
 			CursorFile:        cmd.String("cursor-file"),
 			PebbleOptions:     &ppopts,
 			UserAgent:         fmt.Sprintf("rainbow/%s (atproto-relay)", versioninfo.Short()),
+
+			PlaybackRateLimit:       cmd.Int64("playback-rate-limit"),
+			PlaybackGlobalRateLimit: cmd.Int64("playback-global-rate-limit"),
+			PlaybackExempt:          playbackExempt,
 		}
 		spl, err = splitter.NewSplitter(conf, nextCrawlers)
 	} else {
@@ -195,6 +228,10 @@ func runSplitter(ctx context.Context, cmd *cli.Command) error {
 			UpstreamHost:      upstreamHost,
 			CollectionDirHost: collectionDirHost,
 			CursorFile:        cmd.String("cursor-file"),
+
+			PlaybackRateLimit:       cmd.Int64("playback-rate-limit"),
+			PlaybackGlobalRateLimit: cmd.Int64("playback-global-rate-limit"),
+			PlaybackExempt:          playbackExempt,
 		}
 		spl, err = splitter.NewSplitter(conf, nextCrawlers)
 	}

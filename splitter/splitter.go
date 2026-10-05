@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -54,6 +55,14 @@ type SplitterConfig struct {
 	UserAgent         string
 	PebbleOptions     *pebblepersist.PebblePersistOptions
 	Logger            *slog.Logger
+
+	// PlaybackRateLimit is the most events per second a consumer is sent while
+	// it replays from a cursor. 0 for no limit.
+	PlaybackRateLimit int64
+	// PlaybackGlobalRateLimit is the same across all replaying consumers.
+	PlaybackGlobalRateLimit int64
+	// PlaybackExempt lists the consumer addresses neither limit applies to.
+	PlaybackExempt []netip.Prefix
 }
 
 func (sc *SplitterConfig) UpstreamHostWebsocket() string {
@@ -149,7 +158,7 @@ func NewSplitter(conf SplitterConfig, nextCrawlers []string) (*Splitter, error) 
 		// mem splitter
 		erb := NewEventRingBuffer(20_000, 10_000)
 		s.erb = erb
-		s.events = events.NewEventManager(erb)
+		s.events = events.NewEventManager(s.limitPlayback(erb))
 	} else {
 		pp, err := pebblepersist.NewPebblePersistance(conf.PebbleOptions)
 		if err != nil {
@@ -157,10 +166,24 @@ func NewSplitter(conf SplitterConfig, nextCrawlers []string) (*Splitter, error) 
 		}
 		go pp.GCThread(context.Background())
 		s.pp = pp
-		s.events = events.NewEventManager(pp)
+		s.events = events.NewEventManager(s.limitPlayback(pp))
 	}
 
 	return s, nil
+}
+
+func (s *Splitter) limitPlayback(persister events.EventPersistence) events.EventPersistence {
+	if s.conf.PlaybackRateLimit > 0 || s.conf.PlaybackGlobalRateLimit > 0 {
+		s.logger.Info("limiting cursor playback",
+			"events_per_sec", s.conf.PlaybackRateLimit,
+			"global_events_per_sec", s.conf.PlaybackGlobalRateLimit,
+			"exempt", s.conf.PlaybackExempt,
+		)
+	}
+	return &playbackLimiter{
+		EventPersistence: persister,
+		global:           newPlaybackLimiter(s.conf.PlaybackGlobalRateLimit),
+	}
 }
 
 func (s *Splitter) StartAPI(addr string) error {
