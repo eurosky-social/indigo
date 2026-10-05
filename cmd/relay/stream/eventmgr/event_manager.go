@@ -182,7 +182,11 @@ func (em *EventManager) Subscribe(ctx context.Context, ident string, filter func
 			em.rmSubscriber(sub)
 		}()
 
-		first := <-sub.outgoing
+		first, ok := <-sub.outgoing
+		if !ok {
+			// the subscriber was cleaned up before any live event arrived
+			return
+		}
 
 		// run playback again to get us to the events that have started buffering
 		if err := em.persister.Playback(ctx, lastSeq, func(e *stream.XRPCStreamEvent) error {
@@ -195,6 +199,9 @@ func (em *EventManager) Subscribe(ctx context.Context, ident string, filter func
 			case <-done:
 				return ErrPlaybackShutdown
 			case out <- e:
+				if seq > 0 {
+					lastSeq = seq
+				}
 				return nil
 			}
 		}); err != nil {
@@ -202,6 +209,14 @@ func (em *EventManager) Subscribe(ctx context.Context, ident string, filter func
 				em.log.Error("events playback", "err", err)
 				return
 			}
+		}
+
+		// playback must have delivered everything up to the first buffered
+		// event. If it did not, the live stream would resume past a gap:
+		// close the stream instead, so the consumer reconnects from its cursor.
+		if lastSeq < SequenceForEvent(first) {
+			em.log.Error("events playback ended before the live stream, closing consumer", "ident", ident, "lastSeq", lastSeq, "liveSeq", SequenceForEvent(first))
+			return
 		}
 
 		// now that we are caught up, just copy events from the channel over

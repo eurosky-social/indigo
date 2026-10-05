@@ -735,63 +735,54 @@ func (dp *DiskPersistence) uidForDid(ctx context.Context, did string) (uint64, e
 	return uid, nil
 }
 
+// Playback calls cb for every persisted event after since, in order, up to the
+// end of the log as it stands when playback gets there.
 func (dp *DiskPersistence) Playback(ctx context.Context, since int64, cb func(*stream.XRPCStreamEvent) error) error {
 	var logs []LogFileRef
-	needslogs := true
 	if since != 0 {
 		// find the log file that starts before our since
-		result := dp.meta.Order("seq_start desc").Where("seq_start < ?", since).Limit(1).Find(&logs)
-		if result.Error != nil {
-			return result.Error
+		if err := dp.meta.Order("seq_start desc").Where("seq_start < ?", since).Limit(1).Find(&logs).Error; err != nil {
+			return err
 		}
-		if result.RowsAffected != 0 {
-			needslogs = false
+	}
+	if len(logs) == 0 {
+		if err := dp.meta.Order("seq_start asc").Find(&logs, "seq_start >= ?", since).Error; err != nil {
+			return err
 		}
 	}
 
-	// playback data from all the log files we found, then check the db to see if more were written during playback.
-	// repeat a few times but not unboundedly.
-	// don't decrease '10' below 2 because we should always do two passes through this if the above before-chunk query was used.
-	for range 10 {
-		if needslogs {
-			if err := dp.meta.Order("seq_start asc").Find(&logs, "seq_start >= ?", since).Error; err != nil {
+	// play back the log files we found, then check the db for files created
+	// during playback, until there are none. A consumer that reads slower than
+	// events are written keeps finding new files, and stays in playback until
+	// it catches up: returning early would tell the caller it has seen the
+	// whole log when it has not.
+	for len(logs) > 0 {
+		for _, lf := range logs {
+			lastSeq, err := dp.readEventsFrom(ctx, since, filepath.Join(dp.primaryDir, lf.Path), cb)
+			if err != nil {
 				return err
+			}
+			if lastSeq != nil && *lastSeq > since {
+				since = *lastSeq
 			}
 		}
 
-		lastSeq, err := dp.PlaybackLogfiles(ctx, since, cb, logs)
-		if err != nil {
+		tail := logs[len(logs)-1]
+		var newer []LogFileRef
+		if err := dp.meta.Order("seq_start asc").Find(&newer, "seq_start > ?", tail.SeqStart).Error; err != nil {
 			return err
 		}
-
-		// No lastSeq implies that we read until the end of known events
-		if lastSeq == nil {
-			break
+		if len(newer) == 0 {
+			// tail is still the file being written, and we read it to its end
+			return nil
 		}
 
-		since = *lastSeq
-		needslogs = true
+		// tail was closed when its successor was created, but may have grown
+		// after we read it: read it again from since before moving on.
+		logs = append([]LogFileRef{tail}, newer...)
 	}
 
 	return nil
-}
-
-func (dp *DiskPersistence) PlaybackLogfiles(ctx context.Context, since int64, cb func(*stream.XRPCStreamEvent) error, logFiles []LogFileRef) (*int64, error) {
-	for i, lf := range logFiles {
-		lastSeq, err := dp.readEventsFrom(ctx, since, filepath.Join(dp.primaryDir, lf.Path), cb)
-		if err != nil {
-			return nil, err
-		}
-		since = 0
-		if i == len(logFiles)-1 &&
-			lastSeq != nil &&
-			(*lastSeq-lf.SeqStart) == dp.eventsPerFile-1 {
-			// There may be more log files to read since the last one was full
-			return lastSeq, nil
-		}
-	}
-
-	return nil, nil
 }
 
 func postDoNotEmit(flags uint32) bool {
