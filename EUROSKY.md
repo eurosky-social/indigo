@@ -25,6 +25,18 @@ The branch was rebuilt on 2026-09-23 as upstream `main` plus the commits listed 
 | hepa      | [container-hepa-ghcr.yaml](.github/workflows/container-hepa-ghcr.yaml)               | `hepa-eurosky-<sha>`, `hepa-eurosky-<YYYY-MM-DDTHH-mm-ssZ>`, `hepa-eurosky-latest`                         |
 | mock-csam | [container-mock-csam-ghcr.yaml](.github/workflows/container-mock-csam-ghcr.yaml)     | `mock-csam-eurosky-<sha>`, `mock-csam-eurosky-<YYYY-MM-DDTHH-mm-ssZ>`, `mock-csam-eurosky-latest`          |
 
+### Relay releases
+
+[release-relay.yaml](.github/workflows/release-relay.yaml) publishes the relay as a GitHub release when a `relay-v<version>` tag is pushed: one tarball, `relay-<version>-linux-amd64.tar.gz`, holding the `relay` binary and the admin dashboard (`public/`), with a `.sha256` next to it. Our hosts download it instead of building on the box.
+
+```bash
+git fetch origin
+git tag relay-v0.1.0 origin/eurosky
+git push origin relay-v0.1.0
+```
+
+The tagged commit must be on `eurosky`. We number the releases ourselves, since the relay has no upstream version. The `relay-<datetime>` tags belong to the container workflow and do not trigger a release.
+
 Upstream's other `container-*` workflows are guarded with `if: github.repository == 'bluesky-social/indigo'` and never run here. Neither does `sync-internal.yaml`.
 
 ## Syncing with upstream
@@ -79,6 +91,7 @@ git log --first-parent --oneline eurosky                                    # ou
 | Docker: hepa and relay images cache Go modules and build without `.git`                                                                                 | `dc9fa5e4`  | `cmd/hepa/Dockerfile`, `cmd/relay/Dockerfile`                                                                                                              | Ours only                    |
 | hepa: spam image detection by perceptual hash (`HEPA_SPAM_IMAGE_PATH`, `HEPA_SPAM_HASH_THRESHOLD`), reference image shipped in the hepa image             | `f0e4ed76`  | `automod/visual/{spam_hash_client,spam_hash_rule,metrics}.go`, `cmd/hepa/{main,server}.go`, `cmd/hepa/{Dockerfile,spam.jpg}`, `go.mod`, `go.sum`            | Ours only; demo              |
 | Fork CI: upstream sync workflow, multi-arch GHCR image builds from `eurosky` for relay, hepa and mock-csam, golang.yml on `eurosky`                      | `275a927c`  | `sync-upstream.yaml`, `container-{hepa,relay,mock-csam}-ghcr.yaml`, `golang.yml`                                                                           | Ours only                    |
+| Fork CI: relay releases (binary plus admin dashboard tarball) on `relay-v*` tags | see git log | `release-relay.yaml` | Ours only |
 | This file                                                                                                                                               | see git log | `EUROSKY.md`                                                                                                                                               | Ours only                    |
 
 ### Not carried over from the archive
