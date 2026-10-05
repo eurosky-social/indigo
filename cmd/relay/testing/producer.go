@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/bluesky-social/indigo/cmd/relay/stream"
 
@@ -145,6 +146,29 @@ func (p *Producer) AddSubscriber(ctx context.Context) (<-chan *stream.XRPCStream
 	p.subs = append(p.subs, sub)
 
 	return sub.outgoing, nil
+}
+
+// WaitForSubscriber blocks until a consumer has subscribed, so that events
+// emitted afterwards are not dropped. The relay dials a new host in the
+// background, after SubscribeToHost has returned.
+func (p *Producer) WaitForSubscriber(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		p.subsLk.Lock()
+		n := len(p.subs)
+		p.subsLk.Unlock()
+		if n > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("test producer: no subscriber after %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond * 5):
+		}
+	}
 }
 
 func (p *Producer) Emit(evt *stream.XRPCStreamEvent) error {
