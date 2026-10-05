@@ -95,7 +95,10 @@ func (s *Splitter) HandleSubscribeRepos(c echo.Context) error {
 
 	ident := c.RealIP() + "-" + c.Request().UserAgent()
 
-	evts, cleanup, err := s.events.Subscribe(ctx, ident, func(evt *events.XRPCStreamEvent) bool { return true }, since)
+	// the playback limiter picks this up when it replays events for the cursor
+	subCtx, playback := s.withPlaybackConsumer(ctx, c.RealIP())
+
+	evts, cleanup, err := s.events.Subscribe(subCtx, ident, func(evt *events.XRPCStreamEvent) bool { return true }, since)
 	if err != nil {
 		return err
 	}
@@ -118,6 +121,7 @@ func (s *Splitter) HandleSubscribeRepos(c echo.Context) error {
 		"user_agent", consumer.UserAgent,
 		"cursor", since,
 		"consumer_id", consumerID,
+		"playback", playback.class(),
 	)
 	activeClientGauge.Inc()
 	defer activeClientGauge.Dec()

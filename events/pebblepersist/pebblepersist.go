@@ -41,6 +41,18 @@ type PebblePersistOptions struct {
 
 	// MaxBytes is what we _try_ to keep disk usage under
 	MaxBytes uint64
+
+	// NoSync returns from Persist without waiting for the write to reach the
+	// disk. With a single writer every synced Persist is one fsync, which caps
+	// intake at the disk's fsync rate. Events written shortly before a machine
+	// crash can be lost, so only set it when they can be fetched again (rainbow
+	// resumes its upstream subscription from the last event it still has).
+	NoSync bool
+
+	// RawPlayback makes Playback hand out events that carry only their
+	// serialized bytes and sequence number (Preserialized and PrivSeq) instead
+	// of decoding each one. For consumers that forward the bytes untouched.
+	RawPlayback bool
 }
 
 var DefaultPebblePersistOptions = PebblePersistOptions{
@@ -79,6 +91,10 @@ func (pp *PebblePersist) Persist(ctx context.Context, e *events.XRPCStreamEvent)
 
 	seq := e.Sequence()
 	nowMillis := time.Now().UnixMilli()
+	writeOpts := pebble.Sync
+	if pp.options.NoSync {
+		writeOpts = pebble.NoSync
+	}
 
 	if seq < 0 {
 		// persist with longer key {prev 8 byte key}{time}{int32 extra counter}
@@ -87,14 +103,14 @@ func (pp *PebblePersist) Persist(ctx context.Context, e *events.XRPCStreamEvent)
 		setKeySeqMillis(key[:], seq, nowMillis)
 		binary.BigEndian.PutUint32(key[16:], pp.prevSeqExtra)
 
-		err = pp.db.Set(key[:], blob, pebble.Sync)
+		err = pp.db.Set(key[:], blob, writeOpts)
 	} else {
 		pp.prevSeq = seq
 		pp.prevSeqExtra = 0
 		var key [16]byte
 		setKeySeqMillis(key[:], seq, nowMillis)
 
-		err = pp.db.Set(key[:], blob, pebble.Sync)
+		err = pp.db.Set(key[:], blob, writeOpts)
 	}
 
 	if err != nil {
@@ -120,30 +136,72 @@ func eventFromPebbleIter(iter *pebble.Iterator) (*events.XRPCStreamEvent, error)
 	return evt, nil
 }
 
+// rawEventFromPebbleIter builds an event from the stored bytes and the sequence
+// number in the key, without decoding the event.
+func rawEventFromPebbleIter(iter *pebble.Iterator) (*events.XRPCStreamEvent, error) {
+	blob, err := iter.ValueAndErr()
+	if err != nil {
+		return nil, err
+	}
+	return &events.XRPCStreamEvent{
+		Preserialized: bytes.Clone(blob),
+		PrivSeq:       int64(binary.BigEndian.Uint64(iter.Key()[:8])),
+	}, nil
+}
+
 func (pp *PebblePersist) Playback(ctx context.Context, since int64, cb func(*events.XRPCStreamEvent) error) error {
+	// An iterator only sees what was written before it was opened, and a long
+	// playback leaves the head of the log far behind. Keep opening new ones
+	// until one comes back empty, so that the caller is at the end of the log
+	// when we return and not wherever the first pass happened to stop.
+	for {
+		last, n, err := pp.playbackRound(ctx, since, cb)
+		if err != nil {
+			return err
+		}
+		if n == 0 || last < 0 {
+			return nil
+		}
+		since = last + 1
+	}
+}
+
+// playbackRound plays back what is stored from since on, and returns the
+// sequence number of the last event and how many there were.
+func (pp *PebblePersist) playbackRound(ctx context.Context, since int64, cb func(*events.XRPCStreamEvent) error) (int64, int, error) {
 	var key [8]byte
 	binary.BigEndian.PutUint64(key[:], uint64(since))
 
 	iter, err := pp.db.NewIterWithContext(ctx, &pebble.IterOptions{LowerBound: key[:]})
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer iter.Close()
 
+	last := since
+	n := 0
 	for iter.First(); iter.Valid(); iter.Next() {
-		evt, err := eventFromPebbleIter(iter)
+		var evt *events.XRPCStreamEvent
+		if pp.options.RawPlayback {
+			evt, err = rawEventFromPebbleIter(iter)
+		} else {
+			evt, err = eventFromPebbleIter(iter)
+		}
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 
 		err = cb(evt)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
+		last = int64(binary.BigEndian.Uint64(iter.Key()[:8]))
+		n++
 	}
 
-	return nil
+	return last, n, iter.Error()
 }
+
 func (pp *PebblePersist) TakeDownRepo(ctx context.Context, usr models.Uid) error {
 	// TODO: implement filter on playback to ignore taken-down-repos?
 	return nil

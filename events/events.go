@@ -207,6 +207,10 @@ type XRPCStreamEvent struct {
 	PrivPdsId       uint       `json:"-" cborgen:"-"`
 	PrivRelevantPds []uint     `json:"-" cborgen:"-"`
 	Preserialized   []byte     `json:"-" cborgen:"-"`
+	// PrivSeq is the sequence number of an event that has no decoded body, only
+	// Preserialized bytes (a persister replaying stored events without decoding
+	// them). Ignored when a body is set.
+	PrivSeq int64 `json:"-" cborgen:"-"`
 }
 
 func (evt *XRPCStreamEvent) Serialize(wc io.Writer) error {
@@ -232,6 +236,9 @@ func (evt *XRPCStreamEvent) Serialize(wc io.Writer) error {
 	case evt.RepoInfo != nil:
 		header.MsgType = "#info"
 		obj = evt.RepoInfo
+	case evt.Preserialized != nil:
+		_, err := wc.Write(evt.Preserialized)
+		return err
 	default:
 		return fmt.Errorf("unrecognized event kind")
 	}
@@ -457,6 +464,8 @@ func (evt *XRPCStreamEvent) Sequence() int64 {
 		return -1
 	case evt.Error != nil:
 		return -1
+	case evt.Preserialized != nil:
+		return evt.PrivSeq
 	default:
 		return -1
 	}
@@ -478,6 +487,8 @@ func (evt *XRPCStreamEvent) GetSequence() (int64, bool) {
 		return -1, false
 	case evt.Error != nil:
 		return -1, false
+	case evt.Preserialized != nil:
+		return evt.PrivSeq, evt.PrivSeq >= 0
 	default:
 		return -1, false
 	}
