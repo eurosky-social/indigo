@@ -144,6 +144,12 @@ func RunScenario(ctx context.Context, s *Scenario) error {
 	}
 	defer c.Shutdown()
 
+	// the relay connects to the producer in the background: an event emitted
+	// before it has would reach no one
+	if err := p.WaitForSubscriber(ctx, c.Timeout); err != nil {
+		return err
+	}
+
 	for i, msg := range s.Messages {
 		slog.Info("sending test message", "index", i)
 		c.Clear()
