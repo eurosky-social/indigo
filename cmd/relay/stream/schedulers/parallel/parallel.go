@@ -17,6 +17,10 @@ type Scheduler struct {
 	maxConcurrency int
 	maxQueue       int
 
+	// one token per queued or in-flight work item; AddWork blocks when full.
+	// nil means no limit
+	slots chan struct{}
+
 	do func(context.Context, *stream.XRPCStreamEvent) error
 
 	feeder chan *consumerTask
@@ -62,6 +66,10 @@ func NewScheduler(maxC, maxQ int, ident string, do func(context.Context, *stream
 		log: slog.Default().With("system", "parallel-scheduler"),
 	}
 
+	if maxQ > 0 {
+		p.slots = make(chan struct{}, maxQ)
+	}
+
 	for range maxC {
 		go p.worker()
 	}
@@ -95,7 +103,19 @@ type consumerTask struct {
 	control string
 }
 
+// AddWork queues val to be processed after any earlier work for the same repo.
+// It blocks while maxQueue items are already queued or in flight, so that a
+// host whose events can't be processed fast enough (eg, because it is rate
+// limited) stops being read from, instead of piling up events in memory.
 func (p *Scheduler) AddWork(ctx context.Context, repo string, val *stream.XRPCStreamEvent) error {
+	if p.slots != nil {
+		select {
+		case p.slots <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	p.itemsAdded.Inc()
 	t := &consumerTask{
 		repo: repo,
@@ -123,7 +143,14 @@ func (p *Scheduler) AddWork(ctx context.Context, repo string, val *stream.XRPCSt
 	case p.feeder <- t:
 		return nil
 	case <-ctx.Done():
+		p.releaseSlot()
 		return ctx.Err()
+	}
+}
+
+func (p *Scheduler) releaseSlot() {
+	if p.slots != nil {
+		<-p.slots
 	}
 }
 
@@ -141,6 +168,7 @@ func (p *Scheduler) worker() {
 				p.log.Error("event handler failed", "ident", p.ident, "err", err)
 			}
 			p.itemsProcessed.Inc()
+			p.releaseSlot()
 
 			p.lk.Lock()
 			rem, ok := p.active[work.repo]
