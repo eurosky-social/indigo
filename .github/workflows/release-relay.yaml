@@ -1,0 +1,145 @@
+name: release-relay
+
+# Publishes a prebuilt relay (binary plus admin dashboard) as a GitHub release,
+# so hosts install a CI-built artifact instead of compiling on the box.
+#
+# To cut a release, tag a commit on eurosky and push the tag:
+#
+#   git tag relay-v0.1.0 origin/eurosky && git push origin relay-v0.1.0
+#
+# The version is whatever follows `relay-v`. The relay has no upstream version
+# to follow, so number the releases ourselves. (The `relay-<datetime>` tags are
+# the container workflow's and do not match.)
+#
+# Pull requests that touch this workflow, and manual runs, only build the
+# tarball as a workflow artifact.
+on:
+  push:
+    tags:
+      - 'relay-v*'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release-relay.yaml'
+
+concurrency:
+  group: release-relay-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET: linux-amd64
+
+jobs:
+  build:
+    # The relay links glibc through cgo (sqlite). Pinned, not ubuntu-latest:
+    # the runner's glibc (2.39) is the oldest the binary will start on.
+    runs-on: ubuntu-24.04
+    if: github.repository == 'eurosky-social/indigo'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/relay-v* ]]; then
+            version="${GITHUB_REF#refs/tags/relay-v}"
+            # a release is a commit that went through review on eurosky
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/eurosky \
+              || { echo "tag $GITHUB_REF_NAME is not on eurosky" >&2; exit 1; }
+          else
+            version="0.0.0-dev.${GITHUB_SHA::12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "relay ${version}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Go tooling
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: cmd/relay/relay-admin-ui/yarn.lock
+
+      - name: Build relay
+        # same build as cmd/relay/Dockerfile
+        run: go build -trimpath -tags timetzdata -o dist/relay ./cmd/relay
+
+      - name: Build admin dashboard
+        working-directory: cmd/relay/relay-admin-ui
+        run: |
+          yarn install --frozen-lockfile
+          yarn build
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dir="relay-${VERSION}-${TARGET}"
+          mkdir -p "dist/${dir}"
+          mv dist/relay "dist/${dir}/relay"
+          # the relay serves the dashboard from ./public, relative to its working directory
+          cp -r cmd/relay/relay-admin-ui/dist "dist/${dir}/public"
+          printf '%s\n%s\n' "$VERSION" "$GITHUB_SHA" > "dist/${dir}/VERSION"
+          cd "dist/${dir}"
+          "./relay" --version
+          find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS
+          cd ..
+          tar -czf "${dir}.tar.gz" "${dir}"
+          sha256sum "${dir}.tar.gz" > "${dir}.tar.gz.sha256"
+          rm -r "${dir}"
+          ls -l
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-${{ steps.version.outputs.version }}-${{ env.TARGET }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/relay-v')
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: relay-${{ env.VERSION }}-${{ env.TARGET }}
+          path: dist
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes="relay ${VERSION}: built from ${GITHUB_SHA} for ${TARGET} (glibc 2.39 or newer). The tarball holds the relay binary and the admin dashboard (public/)."
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "relay ${VERSION}" \
+            --notes "$notes"
