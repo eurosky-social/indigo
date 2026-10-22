@@ -68,9 +68,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: yarn
-          cache-dependency-path: cmd/relay/relay-admin-ui/yarn.lock
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cmd/relay/relay-admin-ui/package-lock.json
 
       - name: Build relay
         # same build as cmd/relay/Dockerfile
@@ -79,8 +79,8 @@ jobs:
       - name: Build admin dashboard
         working-directory: cmd/relay/relay-admin-ui
         run: |
-          yarn install --frozen-lockfile
-          yarn build
+          npm ci
+          npm run build
 
       - name: Package
         env:

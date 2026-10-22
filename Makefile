@@ -16,7 +16,6 @@ help: ## Print info about all commands
 
 .PHONY: build
 build: ## Build all executables
-	go build ./cmd/gosky
 	go build ./cmd/relay
 	go build ./cmd/beemo
 	go build ./cmd/lexgen
@@ -93,7 +92,7 @@ build-relay-image: ## Builds relay docker image
 
 .PHONY: build-relay-admin-ui
 build-relay-admin-ui: ## Build relay admin web UI
-	cd  cmd/relay/relay-admin-ui; yarn install --frozen-lockfile; yarn build
+	cd cmd/relay/relay-admin-ui; npm ci; npm run build
 	mkdir -p public
 	cp -r cmd/relay/relay-admin-ui/dist/* public/
 

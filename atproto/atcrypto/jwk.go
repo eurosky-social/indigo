@@ -52,6 +52,9 @@ func ParsePublicJWK(jwk JWK) (PublicKey, error) {
 
 	switch jwk.Curve {
 	case "P-256":
+		if len(xbuf) != 32 || len(ybuf) != 32 {
+			return nil, fmt.Errorf("invalid P-256 coordinates")
+		}
 		curve := elliptic.P256()
 
 		var x, y big.Int
@@ -98,11 +101,18 @@ func ParsePublicJWK(jwk JWK) (PublicKey, error) {
 }
 
 func (k *PublicKeyP256) JWK() (*JWK, error) {
+	// doing k.pubP256.X.Bytes() has a problem with zero-padding, so serialize manually
+	raw := k.UncompressedBytes()
+	if len(raw) != 65 {
+		return nil, fmt.Errorf("unexpected P-256 bytes size")
+	}
+	xbytes := raw[1:33]
+	ybytes := raw[33:65]
 	jwk := JWK{
 		KeyType: "EC",
 		Curve:   "P-256",
-		X:       base64.RawURLEncoding.EncodeToString(k.pubP256.X.Bytes()),
-		Y:       base64.RawURLEncoding.EncodeToString(k.pubP256.Y.Bytes()),
+		X:       base64.RawURLEncoding.EncodeToString(xbytes),
+		Y:       base64.RawURLEncoding.EncodeToString(ybytes),
 	}
 	return &jwk, nil
 }

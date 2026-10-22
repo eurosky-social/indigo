@@ -3,7 +3,7 @@
 #   podman build -f ./cmd/relay/Dockerfile -t relay .
 
 ### Compile stage
-FROM golang:1.26-alpine3.22 AS build-env
+FROM golang:1.26.10-alpine AS build-env
 RUN apk add --no-cache build-base make git
 
 WORKDIR /dockerbuild
@@ -18,45 +18,27 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 
 # timezone data for alpine builds
-ENV GOEXPERIMENT=loopvar
-
-# TODO: Create a docker repo and build from there when launching local-atproto
-# Need to change this code for local-atproto cause in my local project this is
-# a submodule and when pushing into the building context there would be no .git folder
-# RUN GIT_VERSION=$(git describe --tags --long --always) && \
-#     go build -tags timetzdata -o /relay ./cmd/relay
+# Builds without .git in the context (no git describe), e.g. from a submodule checkout.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -tags timetzdata -o /relay ./cmd/relay
 
 ### Build Frontend stage
-FROM node:22-alpine AS web-builder
+FROM node:24-alpine AS web-builder
 
 WORKDIR /app
 
 # Copy package files first for better layer caching
-COPY cmd/relay/relay-admin-ui/package.json cmd/relay/relay-admin-ui/yarn.lock ./
+COPY cmd/relay/relay-admin-ui/package.json cmd/relay/relay-admin-ui/package-lock.json ./
 
-# Cache yarn dependencies
-RUN --mount=type=cache,target=/usr/local/share/.cache/yarn \
-    yarn install --frozen-lockfile
-
-# Copy source and build
-COPY cmd/relay/relay-admin-ui/ ./
-
-WORKDIR /app
-
-# Copy package files first for better layer caching
-COPY cmd/relay/relay-admin-ui/package.json cmd/relay/relay-admin-ui/yarn.lock ./
-
-# Cache yarn dependencies
-RUN --mount=type=cache,target=/usr/local/share/.cache/yarn \
-    yarn install --frozen-lockfile
+# Cache npm dependencies
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
 # Copy source and build
 COPY cmd/relay/relay-admin-ui/ ./
 
-RUN yarn build
+RUN npm run build
 
 ### Run stage
 FROM alpine:3.24
