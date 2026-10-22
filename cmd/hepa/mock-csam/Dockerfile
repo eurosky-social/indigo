@@ -3,7 +3,7 @@
 #   docker build -t mock-csam .
 
 ### Compile stage
-FROM golang:1.24-alpine3.22 AS build-env
+FROM golang:1.26.10-alpine AS build-env
 
 WORKDIR /app
 
