@@ -52,6 +52,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The container runs as root over a workspace the runner user owns, so
+      # git refuses it ("dubious ownership") once checkout's own exception is
+      # gone, and both the tag check and go's VCS stamping need git.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Compute version
         id: version
         run: |
