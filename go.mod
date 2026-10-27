@@ -32,13 +32,12 @@ require (
 	github.com/ipld/go-car v0.6.1-0.20230509095817-92d28eb23ba4
 	github.com/ipld/go-car/v2 v2.13.1
 	github.com/joho/godotenv v1.5.1
-	github.com/labstack/echo/v4 v4.16.0
+	github.com/labstack/echo/v4 v4.16.1
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/minio/sha256-simd v1.0.1
 	github.com/mr-tron/base58 v1.3.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/orandin/slog-gorm v1.3.2
-	github.com/polydawn/refmt v0.90.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/prometheus/client_model v0.5.0
 	github.com/puzpuzpuz/xsync/v3 v3.0.2
@@ -90,7 +89,7 @@ require (
 	github.com/ipfs/go-log/v2 v2.5.1 // indirect
 	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
@@ -98,6 +97,7 @@ require (
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/petar/GoLLRB v0.0.0-20210522233825-ae3b015fd3e9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/polydawn/refmt v0.90.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/vmihailenco/go-tinylfu v0.2.2 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
@@ -171,7 +171,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
