@@ -1,0 +1,146 @@
+name: release-palomar
+
+# Publishes a prebuilt palomar (the search service our appview runs) as a
+# GitHub release, so the appview host installs a CI-built artifact instead of
+# compiling on the box. Same shape as release-relay.yaml.
+#
+# To cut a release, tag a commit on eurosky and push the tag:
+#
+#   git tag palomar-v0.1.0 origin/eurosky && git push origin palomar-v0.1.0
+#
+# The version is whatever follows `palomar-v`. Upstream removed palomar, so
+# there is no upstream version to follow: number the releases ourselves.
+#
+# Pull requests that touch this workflow, and manual runs, only build the
+# tarball as a workflow artifact.
+on:
+  push:
+    tags:
+      - 'palomar-v*'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release-palomar.yaml'
+
+concurrency:
+  group: release-palomar-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET: linux-amd64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # palomar links glibc through cgo (sqlite). The appview host runs Debian
+    # 12 (glibc 2.36), older than any runner's, so build on bookworm: a binary
+    # linked against a newer glibc refuses to start there.
+    container: golang:1.26-bookworm
+    if: github.repository == 'eurosky-social/indigo'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      # the image pins its own Go (GOTOOLCHAIN=local); let go.mod's toolchain
+      # line pick the compiler instead, as setup-go does for the relay
+      GOTOOLCHAIN: auto
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The container runs as root over a workspace the runner user owns, so
+      # git refuses it ("dubious ownership") once checkout's own exception is
+      # gone, and both the tag check and go's VCS stamping need git.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Compute version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/palomar-v* ]]; then
+            version="${GITHUB_REF#refs/tags/palomar-v}"
+            # a release is a commit that went through review on eurosky
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/eurosky \
+              || { echo "tag $GITHUB_REF_NAME is not on eurosky" >&2; exit 1; }
+          else
+            version="0.0.0-dev.${GITHUB_SHA::12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "palomar ${version}" >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+      - name: Build palomar
+        # same build as cmd/palomar/Dockerfile, plus -trimpath and the
+        # embedded tz database the relay release uses
+        run: |
+          go version
+          go build -trimpath -tags timetzdata -o dist/palomar ./cmd/palomar
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          dir="palomar-${VERSION}-${TARGET}"
+          mkdir -p "dist/${dir}"
+          mv dist/palomar "dist/${dir}/palomar"
+          printf '%s\n%s\n' "$VERSION" "$GITHUB_SHA" > "dist/${dir}/VERSION"
+          cd "dist/${dir}"
+          "./palomar" --version
+          # fail the build if the binary would not start on glibc 2.36
+          glibc=$(objdump -T palomar | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest glibc symbol: ${glibc}"
+          [ "$(printf '%s\nGLIBC_2.36\n' "$glibc" | sort -V | tail -1)" = "GLIBC_2.36" ]
+          find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS
+          cd ..
+          tar -czf "${dir}.tar.gz" "${dir}"
+          sha256sum "${dir}.tar.gz" > "${dir}.tar.gz.sha256"
+          rm -r "${dir}"
+          ls -l
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: palomar-${{ steps.version.outputs.version }}-${{ env.TARGET }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/palomar-v')
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: palomar-${{ env.VERSION }}-${{ env.TARGET }}
+          path: dist
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes="palomar ${VERSION}: built from ${GITHUB_SHA} for ${TARGET} (Debian 12 / glibc 2.36 or newer). The tarball holds the palomar binary."
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "palomar ${VERSION}" \
+            --notes "$notes"
