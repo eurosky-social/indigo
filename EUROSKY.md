@@ -37,6 +37,18 @@ git push origin relay-v0.1.0
 
 The tagged commit must be on `eurosky`. We number the releases ourselves, since the relay has no upstream version. The `relay-<datetime>` tags belong to the container workflow and do not trigger a release.
 
+### Palomar releases
+
+[release-palomar.yaml](.github/workflows/release-palomar.yaml) publishes palomar the same way on a `palomar-v<version>` tag: `palomar-<version>-linux-amd64.tar.gz` (the `palomar` binary) with a `.sha256` next to it. It builds in a `golang:*-bookworm` container, not on the runner, because palomar links glibc through cgo and the appview host runs Debian 12 (glibc 2.36); the workflow fails if the binary needs a newer glibc.
+
+```bash
+git fetch origin
+git tag palomar-v0.1.0 origin/eurosky
+git push origin palomar-v0.1.0
+```
+
+As for the relay, the tagged commit must be on `eurosky` and we number the releases ourselves (upstream removed palomar).
+
 Upstream's other `container-*` workflows are guarded with `if: github.repository == 'bluesky-social/indigo'` and never run here. Neither does `sync-internal.yaml`.
 
 ## Syncing with upstream
@@ -97,6 +109,7 @@ git log --first-parent --oneline eurosky                                    # ou
 | Palomar: actor search ranking from [blacksky-algorithms/indigo](https://github.com/blacksky-algorithms/indigo) `blacksky/customizations` (`b9a88d45`..`aded6011`): `function_score` on `followersFuzzy`, `pagerank`, `verified`, `has_custom_domain`; viewer follows from the appview DB (`APPVIEW_DATABASE_URL`, adds `lib/pq`) boosted 10x | see git log | `cmd/palomar/main.go`, `search/{handlers,query,server}.go`, `go.mod`, `go.sum` | Blacksky's; cherry-picked |
 | Palomar: no indexer crash-loop on posts with a `reply` lacking `root` or a partial embed (Blacksky `68160b85`) | see git log | `search/{indexing,transform,transform_test}.go` | Blacksky's; cherry-picked |
 | Palomar: profiles written as partial updates so external ranking signals (`followersFuzzy` from `palomar-sync`) survive a reindex (Blacksky `ab525e4a`) | see git log | `search/{indexing,transform,profile_update_test}.go` | Blacksky's; cherry-picked |
+| Fork CI: palomar releases (binary tarball, built on Debian 12) on `palomar-v*` tags | see git log | `release-palomar.yaml` | Ours only |
 | This file                                                                                                                                               | see git log | `EUROSKY.md`                                                                                                                                               | Ours only                    |
 
 ### Not carried over from the archive
